@@ -1,0 +1,38 @@
+# === 深度學習與強化學習核心 ===
+torch>=2.0.0
+stable-baselines3>=2.0.0
+gymnasium>=0.29.0
+
+# === 數據處理 ===
+numpy>=1.24.0
+pandas>=2.0.0
+
+# === 加密貨幣數據獲取 ===
+binance-connector>=3.7.0
+
+# === 回測框架 ===
+backtesting>=0.3.3
+
+# === 技術指標計算 ===
+ta>=0.11.0
+pandas-ta>=0.3.14b0
+
+# === 視覺化 ===
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.14.0
+
+# === 配置文件處理 ===
+pyyaml>=6.0
+
+# === 日誌與監控 ===
+tensorboard>=2.13.0
+tqdm>=4.65.0
+
+# === 工具庫 ===
+scipy>=1.10.0
+scikit-learn>=1.3.0
+
+# === 開發工具（可選） ===
+jupyter>=1.0.0
+ipython>=8.12.0

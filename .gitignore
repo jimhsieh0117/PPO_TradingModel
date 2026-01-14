@@ -1,0 +1,124 @@
+# === Python 虛擬環境 ===
+venv/
+env/
+ENV/
+.venv/
+*.virtualenv
+
+# === 數據文件（不上傳大型數據集）===
+data/raw/
+data/processed/
+*.csv
+*.parquet
+*.h5
+*.hdf5
+
+# === 訓練好的模型（檔案太大）===
+models/*/model_*.zip
+models/*/best_model/
+models/*/final_model/
+*.pt
+*.pth
+*.onnx
+*.pkl
+*.pickle
+
+# === 訓練日誌與輸出 ===
+models/*/training_log.csv
+models/*/plots/
+models/*/backtest_results/
+logs/
+*.log
+
+# === Python 編譯文件 ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# === Jupyter Notebook ===
+.ipynb_checkpoints/
+*.ipynb
+
+# === 環境變數與敏感資訊 ===
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+secrets.yaml
+config_local.yaml
+api_keys.txt
+
+# === IDE 與編輯器 ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# === 測試覆蓋率報告 ===
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# === TensorBoard ===
+runs/
+tensorboard_logs/
+events.out.tfevents.*
+
+# === 臨時文件 ===
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# === macOS ===
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# === Windows ===
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# === Linux ===
+.directory
+.Trash-*
+
+# === 但保留目錄結構（空 .gitkeep 文件）===
+!data/.gitkeep
+!models/.gitkeep
+!logs/.gitkeep
+
+# === 特殊：保留配置範例但不保留實際配置 ===
+# config.yaml  # 如果包含敏感資訊，取消註釋此行
