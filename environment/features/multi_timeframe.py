@@ -37,8 +37,8 @@ class MultiTimeframeAnalyzer:
         Returns:
             pd.DataFrame: 重採樣後的數據
         """
-        # 重採樣規則
-        resampled = df.resample(f'{minutes}T').agg({
+        # 重採樣規則（使用 'min' 替代已棄用的 'T'）
+        resampled = df.resample(f'{minutes}min').agg({
             'open': 'first',
             'high': 'max',
             'low': 'min',

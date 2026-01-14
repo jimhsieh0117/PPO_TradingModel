@@ -15,6 +15,7 @@ data/processed/
 
 # === 訓練好的模型（檔案太大）===
 models/*/model_*.zip
+models
 models/*/best_model/
 models/*/final_model/
 *.pt

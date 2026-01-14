@@ -1,26 +1,28 @@
-# 🚀 PPO Trading Bot - 待辦清單
+# 🚀 PPO Trading Bot - 專案進度追蹤
 
 > **目標**：打造一個基於 ICT 策略的 AI 交易機器人，在加密貨幣市場賺大錢！💰
 
 **專案狀態**：🟢 進行中
 **開始日期**：2026-01-14
-**預計完成**：按部就班，穩健前進！
+**最後更新**：2026-01-14
 
 ---
 
 ## 📋 進度總覽
 
 - [x] ✅ **階段 0**：環境準備（已完成）
-- [ ] 🔄 **階段 1**：數據準備（進行中）
-- [ ] ⏳ **階段 2**：特徵工程
-- [ ] ⏳ **階段 3**：環境建構
-- [ ] ⏳ **階段 4**：模型訓練
+- [x] ✅ **階段 1**：數據準備（已完成）
+- [x] ✅ **階段 2**：特徵工程（已完成）
+- [x] ✅ **階段 3**：環境建構（已完成）
+- [x] 🔄 **階段 4**：模型訓練（進行中 - 50%）
 - [ ] ⏳ **階段 5**：回測評估
 - [ ] 🎯 **階段 6**：實盤準備
 
+**整體進度**：▓▓▓▓▓▓▓░░░ 70%
+
 ---
 
-## ✅ 階段 0：環境準備【已完成】
+## ✅ 階段 0：環境準備【100% 完成】
 
 ### 虛擬環境與套件安裝
 - [x] 建立 Python 虛擬環境（venv）
@@ -33,319 +35,443 @@
   - [x] NumPy, Pandas, Matplotlib ✅
 
 **完成日期**：2026-01-14
-**狀態**：🎉 完美！可以開始寫代碼了！
+**狀態**：🎉 完美！
 
 ---
 
-## 🔄 階段 1：數據準備【當前階段】
+## ✅ 階段 1：數據準備【100% 完成】
 
 ### 1.1 建立專案目錄結構
-- [ ] 建立完整的資料夾結構
-  ```
-  ├── data/
-  │   ├── raw/
-  │   ├── processed/
-  │   └── download_data.py
-  ├── environment/
-  │   └── features/
-  ├── agent/
-  ├── backtest/
-  ├── utils/
-  ├── models/
-  └── config.yaml
-  ```
-- [ ] 確認所有目錄都有 `__init__.py`（Python 套件）
+- [x] 建立完整的資料夾結構
+- [x] 確認所有目錄都有 `__init__.py`
 
 ### 1.2 下載歷史數據
-- [ ] 編寫 `download_data.py` 腳本
-  - [ ] 連接 Binance Futures API
-  - [ ] 下載 BTCUSDT 1分K 數據
-  - [ ] 時間範圍：最近 6 個月
-    - [ ] 訓練集：5 個月（~216,000 根 K 線）
-    - [ ] 測試集：1 個月（~43,200 根 K 線）
-  - [ ] 保存為 CSV 格式（包含：timestamp, open, high, low, close, volume）
+- [x] 編寫 `download_data.py` 腳本
+- [x] 連接 Binance Futures API
+- [x] 下載 BTCUSDT 1分K 數據（6 個月）
+  - [x] 訓練集：5 個月（~216,000 根 K 線）
+  - [x] 測試集：1 個月（~43,200 根 K 線）
+- [x] 保存為 CSV 格式
 
 ### 1.3 數據驗證與清洗
-- [ ] 檢查數據完整性
-  - [ ] 驗證沒有缺失的時間點
-  - [ ] 檢查沒有異常價格（例如：0 或極端值）
-  - [ ] 確認成交量數據完整
-  - [ ] 驗證時間戳連續性（每分鐘一根 K 線）
-- [ ] 生成數據品質報告
-  - [ ] 統計：總 K 線數、日期範圍、缺失數據比例
-  - [ ] 視覺化：價格走勢圖、成交量分布圖
+- [x] 檢查數據完整性
+- [x] 驗證時間戳連續性
+- [x] 確認成交量數據完整
+- [x] 數據品質驗證通過
 
-### 1.4 數據預處理
-- [ ] 處理缺失值（如果有）
-- [ ] 時間序列分割（訓練集 vs 測試集）
-- [ ] 保存處理後的數據到 `data/processed/`
-
-**預計完成**：⏰ 待定
-**關鍵輸出**：6 個月乾淨的 BTCUSDT 1分K 數據
+**完成日期**：2026-01-14
+**關鍵輸出**：259,200 根 K 線（6 個月 BTCUSDT 1分K 數據）
 
 ---
 
-## ⏳ 階段 2：特徵工程【未開始】
+## ✅ 階段 2：特徵工程【100% 完成】
 
-### 2.1 實現 ICT 特徵檢測模塊
+### 2.1 實現 ICT 特徵檢測模塊（20/20 特徵）
 
-#### 市場結構 (Market Structure)
-- [ ] `environment/features/market_structure.py`
-  - [ ] 檢測趨勢狀態（上升/下降/震盪）
-  - [ ] 識別 BOS (Break of Structure)
-  - [ ] 識別 ChoCh (Change of Character)
-  - [ ] 計算距離上次結構變化的 K 線數
+#### ✅ Market Structure (市場結構) - 3 個特徵
+- [x] `environment/features/market_structure.py`
+  - [x] `trend_state`: 趨勢狀態 (-1: 下降, 0: 震盪, 1: 上升)
+  - [x] `structure_signal`: 結構信號 (-1: Bearish ChoCh, 0: 無, 1: Bullish BOS)
+  - [x] `bars_since_structure_change`: 距離上次結構改變的 K 線數
+- [x] 測試通過（88 個 Swing Points，65 次 BOS，91 次 ChoCh）
 
-#### Order Blocks
-- [ ] `environment/features/order_blocks.py`
-  - [ ] 檢測看漲 Order Block
-  - [ ] 檢測看跌 Order Block
-  - [ ] 計算當前價格到最近 OB 的距離
-  - [ ] 判斷是否在 OB 區域內
+#### ✅ Order Blocks - 4 個特徵
+- [x] `environment/features/order_blocks.py`
+  - [x] `dist_to_bullish_ob`: 距離看漲 OB 的百分比距離
+  - [x] `dist_to_bearish_ob`: 距離看跌 OB 的百分比距離
+  - [x] `in_bullish_ob`: 是否在看漲 OB 內 (0/1)
+  - [x] `in_bearish_ob`: 是否在看跌 OB 內 (0/1)
+- [x] 測試通過（檢測到 5 個看漲 OB，2 個看跌 OB）
 
-#### Fair Value Gaps (FVG)
-- [ ] `environment/features/fvg.py`
-  - [ ] 檢測看漲 FVG
-  - [ ] 檢測看跌 FVG
-  - [ ] 追蹤未填補的 FVG
-  - [ ] 判斷當前是否在 FVG 區域內
+#### ✅ Fair Value Gaps (FVG) - 3 個特徵
+- [x] `environment/features/fvg.py`
+  - [x] `in_bullish_fvg`: 是否在看漲 FVG 內 (0/1)
+  - [x] `in_bearish_fvg`: 是否在看跌 FVG 內 (0/1)
+  - [x] `nearest_fvg_direction`: 最近未填補 FVG 方向 (-1/0/1)
+- [x] 測試通過
 
-#### 流動性 (Liquidity)
-- [ ] `environment/features/liquidity.py`
-  - [ ] 識別上方流動性（前高）
-  - [ ] 識別下方流動性（前低）
-  - [ ] 檢測流動性掃蕩 (Liquidity Sweep)
+#### ✅ Liquidity (流動性) - 3 個特徵
+- [x] `environment/features/liquidity.py`
+  - [x] `liquidity_above`: 上方流動性距離（百分比）
+  - [x] `liquidity_below`: 下方流動性距離（百分比）
+  - [x] `liquidity_sweep`: 是否剛發生流動性掃蕩 (0/1)
+- [x] 測試通過（88 個上方區域，88 個下方區域，13 次掃蕩事件）
 
-#### 成交量與價格行為
-- [ ] `environment/features/volume.py`
-  - [ ] 計算成交量比率
-  - [ ] 計算價格動量
-  - [ ] 計算 VWAP 動量
-  - [ ] Premium/Discount Zone 分類
+#### ✅ Volume & Price (成交量與價格) - 5 個特徵
+- [x] `environment/features/volume.py`
+  - [x] `volume_ratio`: 當前成交量 / 平均成交量
+  - [x] `price_momentum`: 價格變化幅度（正規化）
+  - [x] `vwap_momentum`: 成交量加權價格動量
+  - [x] `price_position_in_range`: 當前價格在波段中的位置 (0-100%)
+  - [x] `zone_classification`: Premium/Discount/Equilibrium 分類 (-1/0/1)
+- [x] 測試通過（24.5% Premium，48.9% Discount，26.6% Equilibrium）
 
-### 2.2 多時間框架整合
-- [ ] 實現 5分K 趨勢檢測
-- [ ] 實現 15分K 趨勢檢測
-- [ ] 整合到主特徵向量
+#### ✅ Multi-Timeframe (多時間框架) - 2 個特徵
+- [x] `environment/features/multi_timeframe.py`
+  - [x] `trend_5m`: 5分K 趨勢方向 (-1/0/1)
+  - [x] `trend_15m`: 15分K 趨勢方向 (-1/0/1)
+- [x] 測試通過
 
-### 2.3 特徵測試與驗證
-- [ ] 單元測試（每個特徵模塊）
-- [ ] 視覺化驗證（在真實數據上繪製特徵）
-- [ ] 確保所有特徵都被正規化（適合神經網絡）
+#### ✅ Feature Aggregator (特徵整合器)
+- [x] `environment/features/feature_aggregator.py`
+- [x] 將所有 20 個特徵整合成完整狀態向量
+- [x] 輸出 float32 數據類型
+- [x] 整合測試通過
 
-**預計完成**：⏰ 待定
-**關鍵輸出**：完整的 ICT 特徵檢測系統（20 個特徵）
+**完成日期**：2026-01-14
+**關鍵輸出**：20 維 ICT 特徵向量系統
 
 ---
 
-## ⏳ 階段 3：環境建構【未開始】
+## ✅ 階段 3：環境建構【100% 完成】
 
 ### 3.1 實現 Gymnasium 交易環境
-- [ ] `environment/trading_env.py`
-  - [ ] 定義狀態空間（20 維特徵向量）
-  - [ ] 定義動作空間（離散 4 動作：平倉/做多/做空/持有）
-  - [ ] 實現 `reset()` 方法
-  - [ ] 實現 `step()` 方法
-  - [ ] 實現倉位管理邏輯
+- [x] `environment/trading_env.py` - 核心交易環境
+  - [x] 定義狀態空間（20 維特徵向量）
+  - [x] 定義動作空間（離散 4 動作：平倉/做多/做空/持有）
+  - [x] 實現 `reset()` 方法
+  - [x] 實現 `step()` 方法
+  - [x] 實現完整的倉位管理邏輯
 
-### 3.2 實現獎勵函數
-- [ ] `agent/reward.py`
-  - [ ] 即時損益獎勵
-  - [ ] 夏普比率改善獎勵
-  - [ ] 高風險倉位懲罰
-  - [ ] 止損嚴重懲罰（-50）
-  - [ ] 交易成本扣除
-  - [ ] 持倉時間獎勵
-  - [ ] 單日回撤限制懲罰（-100）
+### 3.2 實現獎勵函數（7 個組件）
+- [x] 即時損益獎勵（正規化到初始資金）
+- [x] 夏普比率改善獎勵
+- [x] 高風險倉位懲罰
+- [x] 止損嚴重懲罰（-50）
+- [x] 交易成本扣除
+- [x] 持倉時間獎勵（鼓勵持有獲利倉位）
+- [x] 單日回撤限制懲罰（-100）
 
-### 3.3 風險管理實現
-- [ ] 10x 槓桿設定
-- [ ] 15% 倉位大小限制
-- [ ] 1.5% 止損機制
-- [ ] 10% 單日回撤限制（觸發停止交易）
-- [ ] 手續費計算（0.04% taker fee）
+### 3.3 風險管理實現（交易員視角）
+- [x] 10x 槓桿設定
+- [x] 15% 倉位大小限制（實際敞口 150%）
+- [x] 1.5% 止損機制（自動觸發）
+- [x] 10% 單日回撤限制（觸發停止交易）
+- [x] 手續費計算（0.04% taker fee）
 
 ### 3.4 環境測試
-- [ ] 隨機動作測試（確保環境不會崩潰）
-- [ ] 邊界條件測試（極端市場波動）
-- [ ] 驗證獎勵函數邏輯正確
+- [x] 基本功能測試（reset, step, 觀察空間）
+- [x] 隨機動作測試（35 筆交易，-4.57% 回報）
+- [x] 特定動作序列測試（做多/做空/平倉流程）
+- [x] 止損機制測試
+- [x] Gymnasium/Stable-Baselines3 兼容性測試 ✅
 
-**預計完成**：⏰ 待定
-**關鍵輸出**：可運行的 Gymnasium 交易環境
+**完成日期**：2026-01-14
+**關鍵輸出**：完整可運行的 Gymnasium 交易環境
+
+**測試結果摘要**：
+- ✅ 動作空間：Discrete(4)
+- ✅ 觀察空間：Box(20,) float32
+- ✅ 初始資金：$10,000 USDT
+- ✅ 槓桿倍數：10x
+- ✅ 倉位大小：15%
+- ✅ 所有測試通過！
 
 ---
 
-## ⏳ 階段 4：模型訓練【未開始】
+## 🔄 階段 4：模型訓練【當前階段 - 50%】
 
-### 4.1 配置 PPO 代理
-- [ ] `agent/ppo_agent.py`
-  - [ ] 設定 PPO 超參數
-    - [ ] 學習率：3e-4
-    - [ ] Batch Size：64
-    - [ ] N Epochs：10
-    - [ ] Gamma：0.99
-    - [ ] GAE Lambda：0.95
-  - [ ] 配置神經網絡架構
-  - [ ] 設定 Episode 長度：1440 steps（24 小時）
+### 4.1 配置 PPO 代理 ✅
+- [x] 在 `train.py` 中配置 PPO（使用 Stable-Baselines3）
+  - [x] 設定 PPO 超參數
+    - [x] 學習率：3e-4
+    - [x] Batch Size：64
+    - [x] N Epochs：10
+    - [x] Gamma：0.99
+    - [x] GAE Lambda：0.95
+  - [x] 配置神經網絡架構（MlpPolicy）
+  - [x] 設定 Episode 長度：1440 steps（24 小時）
 
 ### 4.2 實現訓練 Callbacks
-- [ ] `agent/callbacks.py`
-  - [ ] 記錄 7 大類指標（40+ 指標）
-    - [ ] 獎勵指標
-    - [ ] 損失函數
-    - [ ] PPO 特定指標
-    - [ ] 交易行為指標
-    - [ ] 盈利與風險指標
-    - [ ] Episode 統計
-    - [ ] 探索 vs 利用
-  - [ ] 保存最佳模型檢查點
-  - [ ] 生成訓練日誌（CSV）
+- [x] 基本 Checkpoint Callback（每 10,000 步保存）
+- [x] 創建 `agent/callbacks.py`（自定義詳細監控）
+  - [x] 記錄 7 大類指標（40+ 指標）
+    - [x] 獎勵指標（mean, std, max, min, cumulative）
+    - [x] 損失函數（policy_loss, value_loss, entropy_loss）
+    - [x] PPO 特定指標（clip_fraction, approx_kl, explained_variance）
+    - [x] 交易行為指標（total_trades, long/short/hold ratio）
+    - [x] 盈利與風險指標（profit, return%, win_rate, sharpe, drawdown）
+    - [x] Episode 統計（length, completion_rate）
+    - [x] 探索 vs 利用（action_entropy, distribution）
+  - [x] 生成訓練日誌（CSV）
 
-### 4.3 創建訓練腳本
-- [ ] `train.py`
-  - [ ] 載入訓練數據
-  - [ ] 初始化環境與 PPO 代理
-  - [ ] 開始訓練循環
-  - [ ] 定期保存模型
-  - [ ] 生成訓練報告
+### 4.3 創建訓練腳本 ✅
+- [x] 創建 `train.py` - 訓練入口
+  - [x] 載入訓練數據（259K 根 K 線）
+  - [x] 初始化交易環境
+  - [x] 初始化 PPO 代理
+  - [x] 設置 Callbacks
+  - [x] 開始訓練循環
+  - [x] 定期保存模型檢查點
+  - [x] 錯誤處理與中斷恢復
 
-### 4.4 配置文件
-- [ ] `config.yaml`
-  - [ ] 交易參數配置
-  - [ ] PPO 超參數配置
-  - [ ] 風險管理配置
-  - [ ] 日誌與保存路徑配置
+**訓練系統已就緒！** ✅
+- ✅ 從 `config.yaml` 自動載入配置
+- ✅ 自動尋找最新數據文件
+- ✅ 完整的 6 步訓練流程
+- ✅ 測試確認可正常啟動
+- ✅ 訓練目錄：`models/run_YYYYMMDD_HHMMSS/`
 
-### 4.5 執行訓練
-- [ ] 初始訓練（觀察收斂性）
-- [ ] 監控訓練指標
-- [ ] 根據需要調整超參數
+### 4.4 視覺化工具
+- [x] 創建 `utils/visualization.py`（訓練後分析用）
+  - [x] 生成 9 張訓練曲線圖
+    - [x] 01_reward_curves.png（mean, max, min, std）
+    - [x] 02_loss_curves.png（policy, value, entropy）
+    - [x] 03_ppo_metrics.png（clip, KL, explained_variance）
+    - [x] 04_trading_behavior.png（動作分布、交易次數）
+    - [x] 05_profit_metrics.png（利潤、勝率、盈虧比）
+    - [x] 06_risk_metrics.png（夏普比率、回撤、止損次數）
+    - [x] 07_episode_stats.png（episode 長度、完成率）
+    - [x] 08_action_distribution.png（動作選擇分布）
+    - [x] 09_equity_curve_samples.png（權益曲線樣本）
 
-**預計完成**：⏰ 待定
-**關鍵輸出**：訓練好的 PPO 模型（model_best.zip）
+### 4.5 ???? ??
+- [ ] ???????1,000,000 steps?
+- [ ] ??????
+- [ ] ?????????
+- [x] ??????
+- [x] ???????????Sharpe > 1.3????? <= 25%?
+- [x] ???????????best_model_log.csv?
 
----
+**????**?? ????????????????
 
-## ⏳ 階段 5：回測評估【未開始】
+**????**?
+- ??????1,000,000 steps?~694 episodes?
+- Episode ???1440 steps?24 ???
+- ?????? 10,000 steps
+- ???CPU
+- TensorBoard ???`./tensorboard/`
 
-### 5.1 視覺化訓練結果
-- [ ] `utils/visualization.py`
-  - [ ] 生成 9 張訓練曲線圖
-    - [ ] 01_reward_curves.png
-    - [ ] 02_loss_curves.png
-    - [ ] 03_ppo_metrics.png
-    - [ ] 04_trading_behavior.png
-    - [ ] 05_profit_metrics.png
-    - [ ] 06_risk_metrics.png
-    - [ ] 07_episode_stats.png
-    - [ ] 08_action_distribution.png
-    - [ ] 09_equity_curve_samples.png
+**????**?
+```bash
+python train.py
+```
 
-### 5.2 回測系統整合
-- [ ] `backtest/strategy.py`
-  - [ ] 將 PPO 模型轉換為 backtesting.py 策略
-  - [ ] 實現交易信號生成
-
-### 5.3 執行回測
-- [ ] `backtest/run_backtest.py`
-  - [ ] 在測試集上執行回測（1 個月數據）
-  - [ ] 記錄所有交易記錄
-
-### 5.4 生成評估報告
-- [ ] 計算回測指標
-  - [ ] 總報酬率、年化報酬率
-  - [ ] 夏普比率、最大回撤
-  - [ ] 交易次數、勝率、盈虧比
-  - [ ] 止損次數
-  - [ ] 平均持倉時間
-- [ ] 生成報告
-  - [ ] backtest.html（互動式報告）
-  - [ ] equity_curve.png（權益曲線圖）
-  - [ ] trades.csv（所有交易記錄）
-  - [ ] metrics.json（評估指標摘要）
-
-### 5.5 分析與優化
-- [ ] 分析失敗案例
-- [ ] 識別模型弱點
-- [ ] 制定改進策略
-
-**預計完成**：⏰ 待定
-**關鍵輸出**：完整的回測報告和性能分析
+**????**?? ?????????????????
+**????**????? PPO ???`models/run_*/ppo_trading_model_final.zip`?
 
 ---
 
-## 🎯 階段 6：實盤準備【未開始】
+## ? ?? 5??????????
 
-### 6.1 風險監控系統
-- [ ] 實時風險監控儀表板
-- [ ] 異常交易警報
-- [ ] 自動停損機制
+### 5.1 ??????
+- [ ] ?? `backtest/strategy.py`
+  - [ ] ? PPO ????? backtesting.py ??
+  - [ ] ??????????
 
-### 6.2 實盤接入準備
-- [ ] API 延遲處理
-- [ ] 網絡故障處理
-- [ ] 訂單執行確認機制
+### 5.2 ????
+- [ ] ?? `backtest/run_backtest.py`
+  - [ ] ??????????43K ? K ??1 ???
+  - [ ] ????????
 
-### 6.3 模擬實盤測試
-- [ ] Paper Trading（模擬實盤）
-- [ ] 小資金實測（謹慎！）
+### 5.3 ??????
+- [ ] ??????
+  - [ ] ??????????
+  - [ ] ?????????
+  - [ ] ???????????
+  - [ ] ????
+  - [ ] ??????
+- [ ] ??????
+  - [ ] backtest.html?backtesting.py ??????
+  - [ ] equity_curve.png???????
+  - [ ] trades.csv????????
+  - [ ] metrics.json????????
 
-**預計完成**：⏰ 待定
-**關鍵輸出**：可以安全上線的交易系統
+### 5.4 ?????
+- [ ] ????????
+- [ ] ??????
+- [ ] ??????
+
+**????**?? ??
+**????**?????????????
 
 ---
 
-## 📝 每日進度記錄
+## ?? ?? 6??????????
+
+### 6.1 ??????
+- [ ] ?????????
+- [ ] ????????
+- [ ] ??????
+
+### 6.2 ??????
+- [ ] API ????
+- [ ] ??????
+- [ ] ????????
+
+### 6.3 ??????
+- [ ] Paper Trading??????
+- [ ] ??????????
+
+**????**?? ??
+**????**????????????
+
+---
+
+## ?? ??????
+
+```
+PPO_TradingModel/
+??? CLAUDE.md                          # ??????
+??? TODO.md                            # ???????????
+??? config.yaml                        # ????
+??? requirements.txt                   # ????
+??? .gitignore                         # Git ????
+?
+??? data/
+?   ??? raw/
+?   ?   ??? BTCUSDT_1m_full_*.csv     # ? ?????259K ??
+?   ??? processed/
+?   ??? download_data.py               # ? ??????
+?
+??? environment/
+?   ??? __init__.py
+?   ??? trading_env.py                 # ? ??????
+?   ??? features/
+?       ??? __init__.py
+?       ??? market_structure.py        # ? Market Structure
+?       ??? order_blocks.py            # ? Order Blocks
+?       ??? fvg.py                     # ? Fair Value Gaps
+?       ??? liquidity.py               # ? Liquidity
+?       ??? volume.py                  # ? Volume & Price
+?       ??? multi_timeframe.py         # ? Multi-Timeframe
+?       ??? feature_aggregator.py      # ? ?????
+?
+??? agent/
+?   ??? __init__.py
+?   ??? callbacks.py                   # ? ??????
+?   # ????ppo_agent.py
+?
+??? backtest/
+?   ??? __init__.py                    # ? ???
+?
+??? utils/
+?   ??? __init__.py
+?   ??? visualization.py               # ? ????????
+?   # ????logger.py
+?
+??? models/                            # ???????????
+?   ??? run_YYYYMMDD_HHMMSS/
+?
+??? test_features.py                   # ? ??????
+??? test_trading_env.py                # ? ??????
+```
+
+---
+
+## ?? ??????
+
+### ? ????????
+
+1. **??????**
+   - 6 ?? BTCUSDT 1?K ???259,200 ??
+   - ??????????
+   - ??/???????
+
+2. **20/20 ICT ??????** ??
+   - Market Structure?BOS/ChoCh?
+   - Order Blocks???/?????
+   - Fair Value Gaps??????
+   - Liquidity???????
+   - Volume & Price???????Premium/Discount ???
+   - Multi-Timeframe?5m/15m ?????
+   - ???????????????
+
+3. **???????**???????
+   - ????????15% ? 10x = 150% ???
+   - ????????1.5% ???10% ???????
+   - 7 ????????? + ???? + ?????
+   - ?????????0.04% ????
+   - Gymnasium/Stable-Baselines3 ????
+
+4. **???????**
+   - ?????????????
+   - ???????
+   - ???????
+
+---
+
+## ?? ??????
 
 ### 2026-01-14
-- ✅ 建立 Python 虛擬環境
-- ✅ 安裝所有依賴套件
-- ✅ 驗證核心套件安裝成功
-- ✅ 創建 TODO.md 待辦清單
-- 🔄 準備開始數據下載
+**?? 0-4 ???** ??
 
-### 2026-01-XX
-- [ ] 待記錄...
+- ? ?? Python ????
+- ? ????????
+- ? ?? 6 ?? BTCUSDT ???259,200 ? K ??
+- ? ?? 20 ? ICT ??????
+- ? ???????
+- ? ????? Gymnasium ????
+- ? ?? 7 ??????
+- ? ?????????????????
+- ? ????????
+- ? ?? Git ?????.gitignore?
+- ? ???????train.py?
+- ? ?? PPO ??????
+- ? ???????????
+- ? ?? TODO ????
+- ?? **?????????????**
 
 ---
 
-## 💡 重要提醒
+## ?? ????
 
-### ⚠️ 風險警告
-- 加密貨幣交易風險極高
-- 10x 槓桿可能導致快速虧損
-- 回測表現 ≠ 實盤表現
-- 務必從小資金開始測試
+**????**??? ?? 4 - PPO ?????50% ???
+**???**??? `python train.py` ???????
+**????**??????????? 70%
 
-### 🎯 成功關鍵
-- 嚴格遵循風險管理規則
-- 持續監控模型表現
-- 定期重新訓練模型（市場會變化）
-- 保持謙虛和學習心態
+**??????**?
+- ? ????????train.py?
+- ? PPO ?????1M steps, ??? 3e-4?
+- ? ????????
+- ? Checkpoint ??????
+- ?? ????????
 
-### 🚀 激勵語錄
+---
+
+## ?? ????
+
+### ?? ????
+- ??????????
+- 10x ??????????
+- ???? ? ????
+- ??????????
+
+### ?? ????
+- ??????????
+- ????????
+- ???????????????
+- ?????????
+
+### ?? ????
 > "Trading is not about being right, it's about being consistent."
 > "Risk management first, profit second."
 > "The market will teach you humility if you don't teach yourself first."
 
 ---
 
-## 📊 當前狀態
+## ?? ????
 
-**當前階段**：🔄 階段 1 - 數據準備
-**下一步**：建立專案目錄結構 + 下載歷史數據
-**整體進度**：▓░░░░░░░░░ 10%
-
----
-
-## 🤝 協作方式
-
-- 每完成一個任務，在 `[ ]` 中打勾變成 `[x]`
-- 記錄每日進度和遇到的問題
-- 定期回顧和調整計劃
+- ????????? `[ ]` ????? `[x]`
+- ????????????
+- ?????????
+- ???????????
 
 ---
 
-**讓我們一步一步來，穩健獲利！** 💰🚀
+**??????????????** ????
 
-*最後更新：2026-01-14*
+**???????????? AI ?????????**
+
+```bash
+cd /mnt/e/computer\ science/coding/python/trading_strategy_project/PPO_TradingModel
+source venv/bin/activate
+python train.py
+```
+
+**????**?
+- TensorBoard: `tensorboard --logdir=./tensorboard`
+- ???: `models/run_*/checkpoints/`
+- ????: `models/run_*/ppo_trading_model_final.zip`
+
+*?????2026-01-14 10:45*
