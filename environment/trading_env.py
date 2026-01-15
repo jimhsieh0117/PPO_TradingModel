@@ -9,6 +9,7 @@ PPO Trading Environment - Gymnasium 實現
 4. 讓利潤奔跑，快速止損
 """
 
+import math
 import numpy as np
 import pandas as pd
 import gymnasium as gym
@@ -138,6 +139,12 @@ class TradingEnv(gym.Env):
         # === 權益曲線（用於計算回撤）===
         self.equity_curve = [initial_balance]
         self.peak_equity = initial_balance
+        # === ??????Welford?===
+        self.normalize_reward = True
+        self._reward_count = 0
+        self._reward_mean = 0.0
+        self._reward_m2 = 0.0
+        self._reward_clip = 10.0
 
     def reset(
         self,
@@ -483,7 +490,33 @@ class TradingEnv(gym.Env):
         if daily_drawdown > self.max_daily_drawdown:
             reward -= 100
 
+        if self.normalize_reward:
+            reward = self._normalize_reward(reward)
+
         return reward
+
+    def _normalize_reward(self, reward: float) -> float:
+        """
+        以Welfor線上統計做標準化，比免獎勵尺度過大
+        """
+        self._reward_count += 1
+        delta = reward - self._reward_mean
+        self._reward_mean += delta / self._reward_count
+        delta2 = reward - self._reward_mean
+        self._reward_m2 += delta * delta2
+
+        if self._reward_count < 2:
+            return 0.0
+
+        variance = self._reward_m2 / (self._reward_count - 1)
+        std = math.sqrt(variance) if variance > 0.0 else 0.0
+        if std == 0.0:
+            return 0.0
+
+        normalized = (reward - self._reward_mean) / (std + 1e-8)
+        if self._reward_clip is not None:
+            normalized = max(min(normalized, self._reward_clip), -self._reward_clip)
+        return float(normalized)
 
     def _check_termination(self) -> bool:
         """
