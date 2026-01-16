@@ -489,7 +489,7 @@ class TradingEnv(gym.Env):
             reward += self.realized_weight * realized_return * 100
 
         # Sharpe improvement (rolling window)
-        if len(self.recent_returns) >= 2:
+        if self.position != 0 and len(self.recent_returns) >= 2:
             returns_array = np.array(self.recent_returns, dtype=np.float64)
             std = returns_array.std()
             if std > 0.0:

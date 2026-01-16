@@ -166,6 +166,8 @@ class TrainingMetricsCallback(BaseCallback):
 
     def _update_train_metrics(self) -> None:
         policy_loss = self._get_logger_value("train/policy_loss")
+        if policy_loss is None:
+            policy_loss = self._get_logger_value("train/policy_gradient_loss")
         value_loss = self._get_logger_value("train/value_loss")
         entropy_loss = self._get_logger_value("train/entropy_loss")
         total_loss = self._get_logger_value("train/loss")
