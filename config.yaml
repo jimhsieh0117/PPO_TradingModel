@@ -80,8 +80,10 @@ training:
 # ==================== 獎勵函數權重 ====================
 reward:
   # 獎勵組成
-  pnl_weight: 100                 # PnL 獎勵權重
-  sharpe_weight: 10               # 夏普比率改善權重
+  floating_weight: 1.0            # 持倉浮盈/浮虧權重
+  realized_weight: 1.0            # 平倉已實現盈虧權重
+  sharpe_weight: 0.3              # 夏普比率改善權重
+  sharpe_window: 60               # 夏普滾動窗口（步數）
 
   # 懲罰
   high_risk_penalty: -20          # 高風險倉位懲罰（超過 50% 倉位）

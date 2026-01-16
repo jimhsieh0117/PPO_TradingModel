@@ -1,4 +1,4 @@
-"""
+﻿"""
 PPO Trading Environment - Gymnasium 實現
 基於 ICT 策略的加密貨幣交易環境
 
@@ -55,7 +55,8 @@ class TradingEnv(gym.Env):
         max_daily_drawdown: float = 0.10,
         trading_fee: float = 0.0004,
         episode_length: int = 1440,
-        feature_config: Optional[Dict] = None
+        feature_config: Optional[Dict] = None,
+        reward_config: Optional[Dict] = None
     ):
         """
         初始化交易環境
@@ -70,6 +71,7 @@ class TradingEnv(gym.Env):
             trading_fee: 交易手續費（taker fee）
             episode_length: 每個 episode 的步數（1440 = 24小時）
             feature_config: 特徵檢測器配置
+            reward_config: 獎勵函數配置
         """
         super().__init__()
 
@@ -100,6 +102,22 @@ class TradingEnv(gym.Env):
             config=feature_config
         )
 
+        # === 獎勵參數 ===
+        self.reward_config = reward_config or {}
+        self.floating_weight = float(
+            self.reward_config.get('floating_weight', self.reward_config.get('pnl_weight', 1.0))
+        )
+        self.realized_weight = float(
+            self.reward_config.get('realized_weight', self.reward_config.get('pnl_weight', 1.0))
+        )
+        self.sharpe_weight = float(self.reward_config.get('sharpe_weight', 0.3))
+        self.sharpe_window = int(self.reward_config.get('sharpe_window', 60))
+        self.high_risk_penalty = float(self.reward_config.get('high_risk_penalty', -20))
+        self.stop_loss_penalty = float(self.reward_config.get('stop_loss_penalty', -50))
+        self.daily_drawdown_penalty = float(self.reward_config.get('daily_drawdown_penalty', -100))
+        self.holding_time_reward = float(self.reward_config.get('holding_time_reward', 0.1))
+        self.max_holding_reward_bars = int(self.reward_config.get('max_holding_reward_bars', 10))
+
         # === Gymnasium 空間定義 ===
         # 動作空間: 0=平倉, 1=做多, 2=做空, 3=持有
         self.action_space = spaces.Discrete(4)
@@ -124,8 +142,10 @@ class TradingEnv(gym.Env):
         self.current_step = 0
         self.episode_start_step = 0
         self.daily_start_balance = initial_balance
-        self.episode_returns = deque(maxlen=100)  # 用於計算夏普比率
+        self.recent_returns = deque(maxlen=self.sharpe_window)  # 用於計算夏普比率
         self.previous_sharpe = 0.0
+        self.last_realized_pnl = 0.0
+        self.realized_this_step = False
 
         # === 交易統計（交易員最關心的指標）===
         self.total_trades = 0
@@ -175,8 +195,10 @@ class TradingEnv(gym.Env):
 
         # 重置 episode 追蹤
         self.daily_start_balance = self.initial_balance
-        self.episode_returns.clear()
+        self.recent_returns.clear()
         self.previous_sharpe = 0.0
+        self.last_realized_pnl = 0.0
+        self.realized_this_step = False
 
         # 重置交易統計
         self.total_trades = 0
@@ -216,6 +238,8 @@ class TradingEnv(gym.Env):
         """
         # 獲取當前價格（使用 iloc 因為 current_step 是整數索引）
         current_price = self.df.iloc[self.current_step]['close']
+        self.realized_this_step = False
+        self.last_realized_pnl = 0.0
 
         # === 1. 檢查止損（交易員的生命線）===
         stop_loss_triggered = self._check_stop_loss(current_price)
@@ -394,8 +418,8 @@ class TradingEnv(gym.Env):
             self.total_loss += abs(pnl)
 
         # 記錄回報率（用於計算夏普比率）
-        return_pct = pnl / self.initial_balance
-        self.episode_returns.append(return_pct)
+        self.last_realized_pnl = pnl
+        self.realized_this_step = True
 
         # 重置倉位
         self.position = 0
@@ -436,59 +460,61 @@ class TradingEnv(gym.Env):
         stop_loss_triggered: bool
     ) -> float:
         """
-        計算獎勵（交易員視角：風險調整後的回報）
-
-        獎勵組件：
-        1. 即時損益（正規化）
-        2. 夏普比率改善
-        3. 高風險倉位懲罰
-        4. 止損嚴重懲罰
-        5. 交易成本
-        6. 持倉時間獎勵
-        7. 單日回撤限制懲罰
+        Calculate reward for the current step.
         """
         reward = 0.0
 
-        # === 1. 即時損益（正規化到初始資金）===
-        equity_change = self.equity - self.equity_curve[-2] if len(self.equity_curve) > 1 else 0
-        reward += (equity_change / self.initial_balance) * 100
+        equity_change = self.equity - self.equity_curve[-2] if len(self.equity_curve) > 1 else 0.0
+        step_return = equity_change / self.initial_balance
+        self.recent_returns.append(step_return)
 
-        # === 2. 夏普比率改善 ===
-        if len(self.episode_returns) >= 2:
-            returns_array = np.array(self.episode_returns)
-            current_sharpe = (
-                returns_array.mean() / (returns_array.std() + 1e-8)
-            ) * np.sqrt(252)  # 年化
-            sharpe_improvement = current_sharpe - self.previous_sharpe
-            reward += sharpe_improvement * 10
-            self.previous_sharpe = current_sharpe
+        # Floating reward (only while holding and not on close step)
+        if self.position != 0 and not self.realized_this_step:
+            reward += self.floating_weight * step_return * 100
 
-        # === 3. 高風險倉位懲罰 ===
-        # 如果實際敞口超過 50% 賬戶，給予懲罰
+        # Realized reward (only on close step)
+        if self.realized_this_step:
+            realized_return = self.last_realized_pnl / self.initial_balance
+            reward += self.realized_weight * realized_return * 100
+
+        # Sharpe improvement (rolling window)
+        if len(self.recent_returns) >= 2:
+            returns_array = np.array(self.recent_returns, dtype=np.float64)
+            std = returns_array.std()
+            if std > 0.0:
+                current_sharpe = (returns_array.mean() / (std + 1e-8)) * np.sqrt(252)
+                sharpe_improvement = current_sharpe - self.previous_sharpe
+                reward += sharpe_improvement * self.sharpe_weight
+                self.previous_sharpe = current_sharpe
+
+        # High risk penalty
         if self.position != 0:
             position_value = self.balance * self.position_size_pct * self.leverage
-            exposure_ratio = position_value / self.equity
+            exposure_ratio = position_value / self.equity if self.equity > 0 else 0.0
             if exposure_ratio > 0.5:
-                reward -= (exposure_ratio - 0.5) * 20
+                reward += (exposure_ratio - 0.5) * self.high_risk_penalty
 
-        # === 4. 止損嚴重懲罰 ===
+        # Stop loss penalty
         if stop_loss_triggered:
-            reward -= 50
+            reward += self.stop_loss_penalty
 
-        # === 5. 交易成本（鼓勵減少過度交易）===
+        # Trading cost penalty
         if trade_executed:
             position_value = self.balance * self.position_size_pct * self.leverage
             fee = position_value * self.trading_fee
             reward -= (fee / self.initial_balance) * 100
 
-        # === 6. 持倉時間獎勵（鼓勵持有獲利倉位）===
+        # Holding time reward
         if self.position != 0 and equity_change > 0:
-            reward += min(self.holding_time, 10) * 0.1
+            reward += min(self.holding_time, self.max_holding_reward_bars) * self.holding_time_reward
 
-        # === 7. 單日回撤限制懲罰 ===
+        # Daily drawdown penalty
         daily_drawdown = (self.daily_start_balance - self.equity) / self.daily_start_balance
         if daily_drawdown > self.max_daily_drawdown:
-            reward -= 100
+            reward += self.daily_drawdown_penalty
+
+        self.realized_this_step = False
+        self.last_realized_pnl = 0.0
 
         if self.normalize_reward:
             reward = self._normalize_reward(reward)
@@ -579,3 +605,4 @@ class TradingEnv(gym.Env):
     def close(self):
         """關閉環境"""
         pass
+

@@ -110,7 +110,8 @@ def create_training_env(df: pd.DataFrame, config: dict):
                 max_daily_drawdown=trading_config.get('daily_drawdown_limit', 0.10),
                 trading_fee=trading_config.get('taker_fee', 0.0004),
                 episode_length=training_config.get('episode_length', 1440),
-                feature_config=config.get('features', {})
+                feature_config=config.get('features', {}),
+                reward_config=config.get('reward', {})
             )
             if seed is not None:
                 env.reset(seed=seed + rank)
