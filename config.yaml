@@ -12,7 +12,7 @@ trading:
   max_positions: 1                # 最多同時持倉數
 
   # 風險管理
-  stop_loss_pct: 0.015            # 止損百分比（1.5%）
+  stop_loss_pct: 0.03            # 止損百分比（3%）
   daily_drawdown_limit: 0.10      # 單日回撤限制（10%）
 
   # 交易成本
@@ -80,10 +80,12 @@ training:
 # ==================== 獎勵函數權重 ====================
 reward:
   # 獎勵組成
-  floating_weight: 1.0            # 持倉浮盈/浮虧權重
-  realized_weight: 1.0            # 平倉已實現盈虧權重
-  sharpe_weight: 0.3              # 夏普比率改善權重
-  sharpe_window: 60               # 夏普滾動窗口（步數）
+  floating_weight: 1.5            # 持倉浮盈/浮虧權重
+  realized_weight: 1.5            # 平倉已實現盈虧權重
+  sharpe_weight: 0.15               # 夏普比率改善權重
+  sharpe_window: 120                # 夏普滾動窗口（步數）
+  no_position_window: 180          # 連續空倉步數門檻
+  no_position_penalty: -0.5        # 連續空倉懲罰
 
   # 懲罰
   high_risk_penalty: -20          # 高風險倉位懲罰（超過 50% 倉位）
@@ -91,8 +93,8 @@ reward:
   daily_drawdown_penalty: -100    # 單日回撤超限懲罰
 
   # 持倉時間獎勵
-  holding_time_reward: 0.1        # 持有獲利倉位的獎勵（每 K 線）
-  max_holding_reward_bars: 10     # 最多獎勵的 K 線數
+  holding_time_reward: 0.4        # 持有獲利倉位的獎勵（每 K 線）
+  max_holding_reward_bars: 120     # 最多獎勵的 K 線數
 
 # ==================== ICT 特徵參數 ====================
 features:

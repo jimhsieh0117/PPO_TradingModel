@@ -112,6 +112,8 @@ class TradingEnv(gym.Env):
         )
         self.sharpe_weight = float(self.reward_config.get('sharpe_weight', 0.3))
         self.sharpe_window = int(self.reward_config.get('sharpe_window', 60))
+        self.no_position_window = int(self.reward_config.get('no_position_window', 180))
+        self.no_position_penalty = float(self.reward_config.get('no_position_penalty', 0.0))
         self.high_risk_penalty = float(self.reward_config.get('high_risk_penalty', -20))
         self.stop_loss_penalty = float(self.reward_config.get('stop_loss_penalty', -50))
         self.daily_drawdown_penalty = float(self.reward_config.get('daily_drawdown_penalty', -100))
@@ -146,6 +148,8 @@ class TradingEnv(gym.Env):
         self.previous_sharpe = 0.0
         self.last_realized_pnl = 0.0
         self.realized_this_step = False
+        self.no_position_steps = 0
+        self.no_position_steps = 0
 
         # === 交易統計（交易員最關心的指標）===
         self.total_trades = 0
@@ -199,6 +203,8 @@ class TradingEnv(gym.Env):
         self.previous_sharpe = 0.0
         self.last_realized_pnl = 0.0
         self.realized_this_step = False
+        self.no_position_steps = 0
+        self.no_position_steps = 0
 
         # 重置交易統計
         self.total_trades = 0
@@ -248,6 +254,11 @@ class TradingEnv(gym.Env):
         trade_executed = False
         if not stop_loss_triggered:
             trade_executed = self._execute_action(action, current_price)
+
+        if self.position == 0:
+            self.no_position_steps += 1
+        else:
+            self.no_position_steps = 0
 
         # === 3. 更新權益 ===
         self._update_equity(current_price)
@@ -512,6 +523,10 @@ class TradingEnv(gym.Env):
         daily_drawdown = (self.daily_start_balance - self.equity) / self.daily_start_balance
         if daily_drawdown > self.max_daily_drawdown:
             reward += self.daily_drawdown_penalty
+
+        if self.no_position_window > 0 and self.no_position_penalty != 0.0:
+            if self.position == 0 and self.no_position_steps >= self.no_position_window:
+                reward += self.no_position_penalty
 
         self.realized_this_step = False
         self.last_realized_pnl = 0.0
