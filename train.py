@@ -158,7 +158,7 @@ def create_ppo_model(env, config: dict):
     model = PPO(
         policy="MlpPolicy",
         env=env,
-        device="cpu",
+        device="cuda",
         learning_rate=ppo_config.get('learning_rate', 3e-4),
         n_steps=ppo_config.get('n_steps', 2048),
         batch_size=ppo_config.get('batch_size', 64),
