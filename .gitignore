@@ -12,6 +12,7 @@ data/processed/
 *.parquet
 *.h5
 *.hdf5
+.claude
 
 # === 訓練好的模型（檔案太大）===
 models/*/model_*.zip

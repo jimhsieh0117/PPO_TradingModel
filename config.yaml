@@ -37,9 +37,10 @@ data:
 # ==================== PPO 超參數 ====================
 ppo:
   # 學習參數
-  learning_rate: 0.0002           # 學習率（3e-4）
+  learning_rate: 0.0002           # 學習率（2e-4）
   n_steps: 2048                   # 更新頻率（每 2048 steps 更新一次）
-  batch_size: 64                  # 批次大小
+  batch_size: 256                  # 批次大小原本為64
+  
   n_epochs: 10                    # 每次更新訓練的輪數
 
   # 折扣與優勢估計
@@ -47,9 +48,9 @@ ppo:
   gae_lambda: 0.95                # GAE Lambda 參數
 
   # PPO 特定參數
-  clip_range: 0.2                 # PPO Clip 範圍
+  clip_range: 0.23                 # PPO Clip 範圍
   clip_range_vf: null             # Value Function Clip（null = 不裁剪）
-  ent_coef: 0.06                  # 熵係數（探索程度）
+  ent_coef: 0.2                  # 熵係數（探索程度）
   vf_coef: 0.5                    # Value Function 係數
   max_grad_norm: 0.5              # 梯度裁剪
 
@@ -65,7 +66,7 @@ ppo:
 training:
   # Episode 設定
   episode_length: 1440            # Episode 長度（1440 steps = 24 小時）
-  total_timesteps: 750000        # 總訓練步數
+  total_timesteps: 1000000        # 總訓練步數
 
   # 日誌與保存
   log_interval: 10                # 每 N 個 episode 記錄一次
@@ -80,37 +81,37 @@ training:
 # ==================== 獎勵函數權重 ====================
 reward:
   # 獎勵組成
-  floating_weight: 1.5            # 持倉浮盈/浮虧權重
-  realized_weight: 1.5            # 平倉已實現盈虧權重
-  sharpe_weight: 0.15               # 夏普比率改善權重
-  sharpe_window: 120                # 夏普滾動窗口（步數）
+  floating_weight: 3            # 持倉浮盈/浮虧權重
+  realized_weight: 3            # 平倉已實現盈虧權重
+  sharpe_weight: 0.3               # 夏普比率改善權重
+  sharpe_window: 240                # 夏普滾動窗口（步數）
   no_position_window: 180          # 連續空倉步數門檻
-  no_position_penalty: -0.5        # 連續空倉懲罰
+  no_position_penalty: -3.0        # 連續空倉懲罰
 
   # 懲罰
-  high_risk_penalty: -20          # 高風險倉位懲罰（超過 50% 倉位）
-  stop_loss_penalty: -50          # 止損懲罰
-  daily_drawdown_penalty: -100    # 單日回撤超限懲罰
+  high_risk_penalty: -15          # 高風險倉位懲罰（超過 50% 倉位）
+  stop_loss_penalty: -20          # 止損懲罰
+  daily_drawdown_penalty: -40    # 單日回撤超限懲罰
 
   # 持倉時間獎勵
-  holding_time_reward: 0.4        # 持有獲利倉位的獎勵（每 K 線）
+  holding_time_reward: 2.0        # 持有獲利倉位的獎勵（每 K 線）
   max_holding_reward_bars: 120     # 最多獎勵的 K 線數
 
 # ==================== ICT 特徵參數 ====================
 features:
   # Market Structure
-  structure_lookback: 50          # 市場結構回看期數
+  structure_lookback: 180          # 市場結構回看期數
 
   # Order Blocks
-  ob_lookback: 20                 # Order Block 回看期數
+  ob_lookback: 180                # Order Block 回看期數
   ob_min_size: 0.002              # Order Block 最小大小（0.2%）
 
   # Fair Value Gaps
   fvg_min_size: 0.001             # FVG 最小大小（0.1%）
-  fvg_max_age: 100                # FVG 最大保留期數
+  fvg_max_age: 180                # FVG 最大保留期數
 
   # Liquidity
-  liquidity_lookback: 50          # 流動性回看期數
+  liquidity_lookback: 180          # 流動性回看期數
 
   # Multi-Timeframe
   higher_timeframes:
@@ -120,7 +121,7 @@ features:
 # ==================== 回測設定 ====================
 backtest:
   initial_capital: 1000000          # 初始資金（USDT）
-  commission: 0.0004              # 手續費
+  commission: 0.0              # 手續費
 
   # 報告輸出
   html_report: true               # 生成 HTML 報告

@@ -3,7 +3,9 @@
     "allow": [
       "Bash(tree:*)",
       "Bash(source venv/bin/activate)",
-      "Bash(python environment/features/market_structure.py:*)"
+      "Bash(python environment/features/market_structure.py:*)",
+      "Bash(dir:*)",
+      "Bash(python -c:*)"
     ]
   }
 }

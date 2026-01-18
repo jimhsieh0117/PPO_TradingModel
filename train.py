@@ -28,6 +28,7 @@ from stable_baselines3.common.utils import set_random_seed
 # 我們的交易環境
 from environment.trading_env import TradingEnv
 from agent.callbacks import TrainingMetricsCallback
+from utils.visualization import plot_training_metrics
 
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -374,6 +375,21 @@ def main():
         if success:
             print("\n🎉 訓練流程全部完成！")
             print(f"📁 模型保存位置: {save_dir}")
+
+            # 生成訓練監控圖表
+            try:
+                print("\n📊 正在生成訓練監控圖表...")
+                training_log_path = f"{save_dir}/training_log.csv"
+                plot_training_metrics(
+                    log_csv_path=training_log_path,
+                    output_dir=None,  # 自動使用 save_dir/train_log_png
+                    smooth_window=10
+                )
+            except Exception as e:
+                print(f"⚠️ 圖表生成失敗: {e}")
+                import traceback
+                traceback.print_exc()
+
             print("\n下一步：")
             print("   1. 查看訓練日誌")
             print("   2. 分析訓練曲線")
