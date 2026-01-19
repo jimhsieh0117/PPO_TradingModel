@@ -137,18 +137,34 @@ class TradingEnv(gym.Env):
         self.holding_time_reward = float(self.reward_config.get('holding_time_reward', 2.0))
         self.max_holding_reward_bars = int(self.reward_config.get('max_holding_reward_bars', 120))
 
-        # 平倉訊號獎勵（v2 新增）
-        self.take_profit_reward = float(self.reward_config.get('take_profit_reward', 100.0))
-        self.take_profit_threshold = float(self.reward_config.get('take_profit_threshold', 0.007))
-        self.cut_loss_early_reward = float(self.reward_config.get('cut_loss_early_reward', 50.0))
+        # 平倉獎勵（v3 新增）
+        self.close_position_reward = float(self.reward_config.get('close_position_reward', 20.0))
+
+        # 平倉訊號獎勵（v3 調整）
+        self.take_profit_reward = float(self.reward_config.get('take_profit_reward', 50.0))
+        self.take_profit_threshold = float(self.reward_config.get('take_profit_threshold', 0.001))
+        self.cut_loss_early_reward = float(self.reward_config.get('cut_loss_early_reward', 30.0))
         self.cut_loss_threshold_min = float(self.reward_config.get('cut_loss_threshold_min', -0.015))
         self.cut_loss_threshold_max = float(self.reward_config.get('cut_loss_threshold_max', -0.005))
-        self.holding_loss_penalty = float(self.reward_config.get('holding_loss_penalty', -5.0))
-        self.holding_loss_threshold = float(self.reward_config.get('holding_loss_threshold', 0.006))
 
-        # 持倉時間限制（v2 新增）
-        self.max_holding_bars = int(self.reward_config.get('max_holding_bars', 720))
-        self.overtime_holding_penalty = float(self.reward_config.get('overtime_holding_penalty', -10.0))
+        # 快速換倉懲罰（v4 調整）
+        self.rapid_switch_penalty = float(self.reward_config.get('rapid_switch_penalty', -15.0))
+        self.rapid_switch_window = int(self.reward_config.get('rapid_switch_window', 5))
+
+        # 持有獎勵/懲罰（v4 調整）
+        self.holding_profit_reward = float(self.reward_config.get('holding_profit_reward', 2.0))
+        self.holding_loss_penalty = float(self.reward_config.get('holding_loss_penalty', -2.0))
+        self.holding_loss_threshold = float(self.reward_config.get('holding_loss_threshold', 0.015))
+
+        # 過度 Hold 懲罰（v4 新增）
+        self.excessive_hold_penalty = float(self.reward_config.get('excessive_hold_penalty', -1.0))
+        self.excessive_hold_window = int(self.reward_config.get('excessive_hold_window', 20))
+
+        # 持倉時間限制（v4 調整）
+        self.max_holding_bars = int(self.reward_config.get('max_holding_bars', 120))
+        self.min_holding_bars = int(self.reward_config.get('min_holding_bars', 3))
+        self.overtime_holding_penalty = float(self.reward_config.get('overtime_holding_penalty', -15.0))
+        self.undertime_holding_penalty = float(self.reward_config.get('undertime_holding_penalty', -5.0))
 
         # === Gymnasium 空間定義 ===
         # 動作空間: 0=平倉, 1=做多, 2=做空, 3=持有
@@ -189,6 +205,12 @@ class TradingEnv(gym.Env):
         self.total_loss = 0.0
         self.stop_loss_count = 0
         self.holding_time = 0  # 當前持倉時間（K線數）
+
+        # v3 新增：追蹤上次開倉時間（用於檢測快速換倉）
+        self.last_open_step = -999  # 上次開倉的 step（初始化為遠古時間）
+
+        # v4 新增：追蹤連續 Hold 次數（用於檢測過度保守）
+        self.consecutive_hold_steps = 0  # 連續 Hold 的步數
 
         # === 權益曲線（用於計算回撤）===
         self.equity_curve = [initial_balance]
@@ -501,17 +523,22 @@ class TradingEnv(gym.Env):
         stop_loss_triggered: bool
     ) -> float:
         """
-        【方案 1 v2】重構獎勵函數 - 鼓勵開倉、優化平倉
+        【v4】平衡版獎勵函數 - 修正 v3 的過度懲罰
 
-        核心改變：
-        1. 大幅增加盈利獎勵
-        2. 開倉立即獎勵
-        3. 減少手續費懲罰
-        4. 空倉懲罰
-        5. 【v2 新增】獲利平倉獎勵
-        6. 【v2 新增】小虧主動平倉獎勵
-        7. 【v2 新增】持有虧損倉位懲罰
-        8. 【v2 新增】超時持倉懲罰
+        核心改變（相對 v3）：
+        1. 提高開倉獎勵（3 → 10，修正過度保守）
+        2. 降低平倉獎勵（20 → 15，平衡開倉/平倉）
+        3. 【核心】大幅減輕快速換倉懲罰（-50 → -15，減少 70%）
+        4. 【核心】縮短快速換倉窗口（10分鐘 → 5分鐘）
+        5. 【核心】新增過度 Hold 懲罰（防止過於保守）
+        6. 提高獲利門檻（0.1% → 0.2%，更現實）
+        7. 略提高虧損懲罰（-1 → -2，鼓勵及時平倉）
+        8. 放寬最短持倉時間（5分鐘 → 3分鐘）
+
+        預期行為：
+        - 完整循環（開倉→持有10分鐘→獲利平倉）= +85 獎勵
+        - 快速換倉（5分鐘內）= +5 獎勵（仍可行但次優）
+        - 過度 Hold（20分鐘不動作）= -20 懲罰（防止過於保守）
         """
         reward = 0.0
 
@@ -527,37 +554,53 @@ class TradingEnv(gym.Env):
             # 虧損時：使用較低倍數懲罰（鼓勵冒險）
             reward += step_return * self.loss_multiplier
 
-        # === 2. 開倉立即獎勵（關鍵！）===
+        # === 2. 開倉獎勵（v3 大幅降低）===
         if action in [1, 2]:  # Long or Short
-            # 開倉行為本身就給獎勵
+            # 開倉行為本身給小獎勵（從 20 → 3）
             reward += self.open_position_reward
 
-            # 如果開倉後有浮盈，額外獎勵
+            # 【v3 新增】檢測快速換倉
+            steps_since_last_open = self.current_step - self.last_open_step
+            if steps_since_last_open < self.rapid_switch_window:
+                # 快速換倉懲罰
+                reward += self.rapid_switch_penalty
+
+            # 更新上次開倉時間
+            self.last_open_step = self.current_step
+
+            # 如果開倉後有浮盈，額外獎勵（減少）
             if self.position != 0 and equity_change > 0:
                 reward += self.profitable_open_bonus
 
-        # === 3. 平倉已實現盈虧（保留）===
-        if self.realized_this_step:
+        # === 3. 【v3 核心改進】平倉基礎獎勵 ===
+        if action == 0 and self.realized_this_step:
+            # 任何平倉都給基礎獎勵（鼓勵主動平倉）
+            reward += self.close_position_reward
+
+            # 計算已實現盈虧
             realized_return = self.last_realized_pnl / self.initial_balance
             if realized_return > 0:
-                reward += realized_return * self.profit_multiplier * 0.5  # 平倉獎勵減半
+                reward += realized_return * self.profit_multiplier * 0.5  # 平倉盈利
             else:
-                reward += realized_return * self.loss_multiplier * 0.5
+                reward += realized_return * self.loss_multiplier * 0.5  # 平倉虧損
 
-        # === 3.1 【v2 新增】獲利平倉額外獎勵 ===
+            # 計算持倉時間（用於檢測過短平倉）
+            if self.holding_time < self.min_holding_bars:
+                # 過短持倉懲罰
+                reward += self.undertime_holding_penalty
+
+        # === 3.1 【v3 調整】獲利平倉額外獎勵（門檻大幅降低）===
         if action == 0 and self.realized_this_step and self.last_realized_pnl > 0:
-            # 計算該筆交易的報酬率
             if self.entry_price > 0:
                 position_value = self.balance * self.position_size_pct
                 trade_return_pct = self.last_realized_pnl / position_value
 
-                # 超過獲利門檻時給予額外獎勵
+                # 超過獲利門檻時給予額外獎勵（0.1% vs 舊版 0.7%）
                 if trade_return_pct >= self.take_profit_threshold:
                     reward += self.take_profit_reward
 
-        # === 3.2 【v2 新增】小虧主動平倉獎勵 ===
+        # === 3.2 【v3 調整】小虧主動平倉獎勵 ===
         if action == 0 and self.realized_this_step and self.last_realized_pnl < 0:
-            # 計算該筆交易的報酬率
             if self.entry_price > 0:
                 position_value = self.balance * self.position_size_pct
                 trade_return_pct = self.last_realized_pnl / position_value
@@ -566,17 +609,21 @@ class TradingEnv(gym.Env):
                 if self.cut_loss_threshold_min <= trade_return_pct <= self.cut_loss_threshold_max:
                     reward += self.cut_loss_early_reward
 
-        # === 3.3 【v2 新增】持有虧損倉位懲罰 ===
+        # === 3.3 【v3 新增】持有獲利倉位獎勵 + 持有虧損懲罰 ===
         if self.position != 0 and self.entry_price > 0:
-            # 計算當前浮虧百分比
+            # 計算當前浮盈/浮虧百分比
             current_price = self.df.iloc[self.current_step]['close']
             if self.position == 1:  # 做多
                 unrealized_pnl_pct = (current_price - self.entry_price) / self.entry_price
             else:  # 做空
                 unrealized_pnl_pct = (self.entry_price - current_price) / self.entry_price
 
-            # 浮虧超過門檻時給予持續懲罰
-            if unrealized_pnl_pct < 0 and abs(unrealized_pnl_pct) >= self.holding_loss_threshold:
+            # 持有獲利倉位獎勵（鼓勵持倉）
+            if unrealized_pnl_pct > 0:
+                reward += self.holding_profit_reward
+
+            # 浮虧超過門檻時給予持續懲罰（但懲罰減輕）
+            elif abs(unrealized_pnl_pct) >= self.holding_loss_threshold:
                 reward += self.holding_loss_penalty
 
         # === 4. 夏普比率改善（保留）===
@@ -602,6 +649,16 @@ class TradingEnv(gym.Env):
                 # 持續懲罰空倉
                 reward += self.no_position_penalty
 
+        # === 6.1 【v4 新增】過度 Hold 懲罰（防止過於保守）===
+        if action == 3:  # Hold 動作
+            self.consecutive_hold_steps += 1
+            # 連續 Hold 超過門檻時懲罰
+            if self.consecutive_hold_steps >= self.excessive_hold_window:
+                reward += self.excessive_hold_penalty
+        else:
+            # 非 Hold 動作，重置計數器
+            self.consecutive_hold_steps = 0
+
         # === 7. 高風險倉位懲罰（保留）===
         if self.position != 0:
             position_value = self.balance * self.position_size_pct * self.leverage
@@ -613,13 +670,12 @@ class TradingEnv(gym.Env):
         if stop_loss_triggered:
             reward += self.stop_loss_penalty
 
-        # === 9. 持倉時間獎勵（保留）===
-        if self.position != 0 and equity_change > 0:
-            reward += min(self.holding_time, self.max_holding_reward_bars) * self.holding_time_reward
+        # === 9. 【v3 移除舊版持倉時間獎勵】===
+        # 舊版機制已被 holding_profit_reward 取代
 
-        # === 9.1 【v2 新增】超時持倉懲罰 ===
+        # === 9.1 【v3 調整】超時持倉懲罰（收緊至 2 小時）===
         if self.position != 0 and self.holding_time > self.max_holding_bars:
-            # 超過最大持倉時間時給予持續懲罰
+            # 超過最大持倉時間時給予持續懲罰（120 根 K 線 = 2 小時）
             reward += self.overtime_holding_penalty
 
         # === 10. 單日回撤限制懲罰（保留嚴格）===

@@ -158,10 +158,10 @@ def create_ppo_model(env, config: dict):
     model = PPO(
         policy="MlpPolicy",
         env=env,
-        device="cuda",
+        device=ppo_config.get('device', 'cpu'),
         learning_rate=ppo_config.get('learning_rate', 3e-4),
-        n_steps=ppo_config.get('n_steps', 2048),
-        batch_size=ppo_config.get('batch_size', 64),
+        n_steps=ppo_config.get('n_steps', 4096),
+        batch_size=ppo_config.get('batch_size', 256),
         n_epochs=ppo_config.get('n_epochs', 10),
         gamma=ppo_config.get('gamma', 0.99),
         gae_lambda=ppo_config.get('gae_lambda', 0.95),
@@ -175,8 +175,10 @@ def create_ppo_model(env, config: dict):
 
     print("   ✅ PPO 模型創建成功")
     print(f"   - 策略: MlpPolicy")
+    print(f"   - 設備: {ppo_config.get('device', 'cpu').upper()}")
     print(f"   - 學習率: {ppo_config.get('learning_rate', 3e-4)}")
-    print(f"   - Batch Size: {ppo_config.get('batch_size', 64)}")
+    print(f"   - N Steps: {ppo_config.get('n_steps', 4096)}")
+    print(f"   - Batch Size: {ppo_config.get('batch_size', 256)}")
     print(f"   - N Epochs: {ppo_config.get('n_epochs', 10)}")
     print(f"   - Gamma: {ppo_config.get('gamma', 0.99)}")
 
