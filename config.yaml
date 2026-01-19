@@ -12,7 +12,7 @@ trading:
   max_positions: 1                # 最多同時持倉數
 
   # 風險管理
-  stop_loss_pct: 0.03            # 止損百分比（3%）
+  stop_loss_pct: 0.015            # 止損百分比（1.5%）
   daily_drawdown_limit: 0.10      # 單日回撤限制（10%）
 
   # 交易成本
@@ -80,22 +80,52 @@ training:
 
 # ==================== 獎勵函數權重 ====================
 reward:
-  # 獎勵組成
-  floating_weight: 3            # 持倉浮盈/浮虧權重
-  realized_weight: 3            # 平倉已實現盈虧權重
+  # === 基礎盈利獎勵 ===
+  profit_multiplier: 500           # 盈利時的獎勵倍數（大幅提高！）
+  loss_multiplier: 100             # 虧損時的懲罰倍數（相對較輕）
+
+  # === 舊版權重（保留兼容性）===
+  floating_weight: 3               # 持倉浮盈/浮虧權重
+  realized_weight: 3               # 平倉已實現盈虧權重
+
+  # === 開倉激勵（關鍵！）===
+  open_position_reward: 20.0       # 開倉立即獎勵（鼓勵開倉行為）
+  profitable_open_bonus: 50.0      # 開倉後有浮盈時的額外獎勵
+
+  # === 交易成本調整 ===
+  trading_fee_multiplier: 0.3      # 手續費懲罰倍數（0.3 = 減少 70% 懲罰！）
+
+  # === 空倉懲罰（關鍵！）===
+  no_position_window: 20           # 連續空倉步數門檻（從 180 降到 20）
+  no_position_penalty: -1.0        # 連續空倉懲罰（每步）
+
+  # === 夏普比率 ===
   sharpe_weight: 0.3               # 夏普比率改善權重
-  sharpe_window: 240                # 夏普滾動窗口（步數）
-  no_position_window: 180          # 連續空倉步數門檻
-  no_position_penalty: -3.0        # 連續空倉懲罰
+  sharpe_window: 240               # 夏普滾動窗口（步數）
 
-  # 懲罰
-  high_risk_penalty: -15          # 高風險倉位懲罰（超過 50% 倉位）
-  stop_loss_penalty: -20          # 止損懲罰
-  daily_drawdown_penalty: -40    # 單日回撤超限懲罰
+  # === 風險懲罰 ===
+  high_risk_penalty: -15           # 高風險倉位懲罰（超過 50% 倉位）
+  stop_loss_penalty: -200          # 止損重懲罰（保持嚴格）
+  daily_drawdown_penalty: -400     # 單日回撤超限重懲罰（保持嚴格）
 
-  # 持倉時間獎勵
-  holding_time_reward: 2.0        # 持有獲利倉位的獎勵（每 K 線）
+  # === 持倉時間獎勵 ===
+  holding_time_reward: 2.0         # 持有獲利倉位的獎勵（每 K 線）
   max_holding_reward_bars: 120     # 最多獎勵的 K 線數
+
+  # === 平倉訊號獎勵（v2 新增）===
+  take_profit_reward: 100.0        # 獲利平倉額外獎勵
+  take_profit_threshold: 0.007     # 獲利門檻 0.7%
+
+  cut_loss_early_reward: 50.0      # 小虧主動平倉獎勵
+  cut_loss_threshold_min: -0.015   # 小虧範圍下限 -1.5%
+  cut_loss_threshold_max: -0.005   # 小虧範圍上限 -0.5%
+
+  holding_loss_penalty: -5.0       # 持有虧損倉位懲罰（每步）
+  holding_loss_threshold: 0.006    # 虧損門檻 0.6%（浮虧超過此值開始懲罰）
+
+  # === 持倉時間限制（v2 新增）===
+  max_holding_bars: 720            # 最多持倉 12 小時（720 根 1分K）
+  overtime_holding_penalty: -10.0  # 超時持倉懲罰（每步）
 
 # ==================== ICT 特徵參數 ====================
 features:

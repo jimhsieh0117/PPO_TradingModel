@@ -104,21 +104,51 @@ class TradingEnv(gym.Env):
 
         # === 獎勵參數 ===
         self.reward_config = reward_config or {}
+
+        # 新版：基礎盈利獎勵
+        self.profit_multiplier = float(self.reward_config.get('profit_multiplier', 500))
+        self.loss_multiplier = float(self.reward_config.get('loss_multiplier', 100))
+
+        # 舊版權重（保留兼容性）
         self.floating_weight = float(
             self.reward_config.get('floating_weight', self.reward_config.get('pnl_weight', 1.0))
         )
         self.realized_weight = float(
             self.reward_config.get('realized_weight', self.reward_config.get('pnl_weight', 1.0))
         )
+
+        # 開倉激勵（關鍵！）
+        self.open_position_reward = float(self.reward_config.get('open_position_reward', 20.0))
+        self.profitable_open_bonus = float(self.reward_config.get('profitable_open_bonus', 50.0))
+
+        # 交易成本調整
+        self.trading_fee_multiplier = float(self.reward_config.get('trading_fee_multiplier', 0.3))
+
+        # 空倉懲罰
+        self.no_position_window = int(self.reward_config.get('no_position_window', 20))
+        self.no_position_penalty = float(self.reward_config.get('no_position_penalty', -1.0))
+
+        # 其他參數
         self.sharpe_weight = float(self.reward_config.get('sharpe_weight', 0.3))
         self.sharpe_window = int(self.reward_config.get('sharpe_window', 60))
-        self.no_position_window = int(self.reward_config.get('no_position_window', 180))
-        self.no_position_penalty = float(self.reward_config.get('no_position_penalty', 0.0))
-        self.high_risk_penalty = float(self.reward_config.get('high_risk_penalty', -20))
-        self.stop_loss_penalty = float(self.reward_config.get('stop_loss_penalty', -50))
-        self.daily_drawdown_penalty = float(self.reward_config.get('daily_drawdown_penalty', -100))
-        self.holding_time_reward = float(self.reward_config.get('holding_time_reward', 0.1))
-        self.max_holding_reward_bars = int(self.reward_config.get('max_holding_reward_bars', 10))
+        self.high_risk_penalty = float(self.reward_config.get('high_risk_penalty', -15))
+        self.stop_loss_penalty = float(self.reward_config.get('stop_loss_penalty', -200))
+        self.daily_drawdown_penalty = float(self.reward_config.get('daily_drawdown_penalty', -400))
+        self.holding_time_reward = float(self.reward_config.get('holding_time_reward', 2.0))
+        self.max_holding_reward_bars = int(self.reward_config.get('max_holding_reward_bars', 120))
+
+        # 平倉訊號獎勵（v2 新增）
+        self.take_profit_reward = float(self.reward_config.get('take_profit_reward', 100.0))
+        self.take_profit_threshold = float(self.reward_config.get('take_profit_threshold', 0.007))
+        self.cut_loss_early_reward = float(self.reward_config.get('cut_loss_early_reward', 50.0))
+        self.cut_loss_threshold_min = float(self.reward_config.get('cut_loss_threshold_min', -0.015))
+        self.cut_loss_threshold_max = float(self.reward_config.get('cut_loss_threshold_max', -0.005))
+        self.holding_loss_penalty = float(self.reward_config.get('holding_loss_penalty', -5.0))
+        self.holding_loss_threshold = float(self.reward_config.get('holding_loss_threshold', 0.006))
+
+        # 持倉時間限制（v2 新增）
+        self.max_holding_bars = int(self.reward_config.get('max_holding_bars', 720))
+        self.overtime_holding_penalty = float(self.reward_config.get('overtime_holding_penalty', -10.0))
 
         # === Gymnasium 空間定義 ===
         # 動作空間: 0=平倉, 1=做多, 2=做空, 3=持有
@@ -471,7 +501,17 @@ class TradingEnv(gym.Env):
         stop_loss_triggered: bool
     ) -> float:
         """
-        Calculate reward for the current step.
+        【方案 1 v2】重構獎勵函數 - 鼓勵開倉、優化平倉
+
+        核心改變：
+        1. 大幅增加盈利獎勵
+        2. 開倉立即獎勵
+        3. 減少手續費懲罰
+        4. 空倉懲罰
+        5. 【v2 新增】獲利平倉獎勵
+        6. 【v2 新增】小虧主動平倉獎勵
+        7. 【v2 新增】持有虧損倉位懲罰
+        8. 【v2 新增】超時持倉懲罰
         """
         reward = 0.0
 
@@ -479,16 +519,67 @@ class TradingEnv(gym.Env):
         step_return = equity_change / self.initial_balance
         self.recent_returns.append(step_return)
 
-        # Floating reward (only while holding and not on close step)
-        if self.position != 0 and not self.realized_this_step:
-            reward += self.floating_weight * step_return * 100
+        # === 1. 基礎盈利獎勵（大幅提高！）===
+        if equity_change > 0:
+            # 盈利時：使用高倍數獎勵
+            reward += step_return * self.profit_multiplier
+        else:
+            # 虧損時：使用較低倍數懲罰（鼓勵冒險）
+            reward += step_return * self.loss_multiplier
 
-        # Realized reward (only on close step)
+        # === 2. 開倉立即獎勵（關鍵！）===
+        if action in [1, 2]:  # Long or Short
+            # 開倉行為本身就給獎勵
+            reward += self.open_position_reward
+
+            # 如果開倉後有浮盈，額外獎勵
+            if self.position != 0 and equity_change > 0:
+                reward += self.profitable_open_bonus
+
+        # === 3. 平倉已實現盈虧（保留）===
         if self.realized_this_step:
             realized_return = self.last_realized_pnl / self.initial_balance
-            reward += self.realized_weight * realized_return * 100
+            if realized_return > 0:
+                reward += realized_return * self.profit_multiplier * 0.5  # 平倉獎勵減半
+            else:
+                reward += realized_return * self.loss_multiplier * 0.5
 
-        # Sharpe improvement (rolling window)
+        # === 3.1 【v2 新增】獲利平倉額外獎勵 ===
+        if action == 0 and self.realized_this_step and self.last_realized_pnl > 0:
+            # 計算該筆交易的報酬率
+            if self.entry_price > 0:
+                position_value = self.balance * self.position_size_pct
+                trade_return_pct = self.last_realized_pnl / position_value
+
+                # 超過獲利門檻時給予額外獎勵
+                if trade_return_pct >= self.take_profit_threshold:
+                    reward += self.take_profit_reward
+
+        # === 3.2 【v2 新增】小虧主動平倉獎勵 ===
+        if action == 0 and self.realized_this_step and self.last_realized_pnl < 0:
+            # 計算該筆交易的報酬率
+            if self.entry_price > 0:
+                position_value = self.balance * self.position_size_pct
+                trade_return_pct = self.last_realized_pnl / position_value
+
+                # 在小虧範圍內主動平倉給予獎勵（鼓勵及時止損）
+                if self.cut_loss_threshold_min <= trade_return_pct <= self.cut_loss_threshold_max:
+                    reward += self.cut_loss_early_reward
+
+        # === 3.3 【v2 新增】持有虧損倉位懲罰 ===
+        if self.position != 0 and self.entry_price > 0:
+            # 計算當前浮虧百分比
+            current_price = self.df.iloc[self.current_step]['close']
+            if self.position == 1:  # 做多
+                unrealized_pnl_pct = (current_price - self.entry_price) / self.entry_price
+            else:  # 做空
+                unrealized_pnl_pct = (self.entry_price - current_price) / self.entry_price
+
+            # 浮虧超過門檻時給予持續懲罰
+            if unrealized_pnl_pct < 0 and abs(unrealized_pnl_pct) >= self.holding_loss_threshold:
+                reward += self.holding_loss_penalty
+
+        # === 4. 夏普比率改善（保留）===
         if self.position != 0 and len(self.recent_returns) >= 2:
             returns_array = np.array(self.recent_returns, dtype=np.float64)
             std = returns_array.std()
@@ -498,39 +589,49 @@ class TradingEnv(gym.Env):
                 reward += sharpe_improvement * self.sharpe_weight
                 self.previous_sharpe = current_sharpe
 
-        # High risk penalty
+        # === 5. 交易成本懲罰（大幅減少！）===
+        if trade_executed:
+            position_value = self.balance * self.position_size_pct * self.leverage
+            fee = position_value * self.trading_fee
+            # 使用 trading_fee_multiplier 減少懲罰（0.3 = 減少 70%）
+            reward -= (fee / self.initial_balance) * 100 * self.trading_fee_multiplier
+
+        # === 6. 空倉懲罰（關鍵！）===
+        if self.no_position_window > 0 and self.no_position_penalty != 0.0:
+            if self.position == 0 and self.no_position_steps >= self.no_position_window:
+                # 持續懲罰空倉
+                reward += self.no_position_penalty
+
+        # === 7. 高風險倉位懲罰（保留）===
         if self.position != 0:
             position_value = self.balance * self.position_size_pct * self.leverage
             exposure_ratio = position_value / self.equity if self.equity > 0 else 0.0
             if exposure_ratio > 0.5:
                 reward += (exposure_ratio - 0.5) * self.high_risk_penalty
 
-        # Stop loss penalty
+        # === 8. 止損重懲罰（保留嚴格）===
         if stop_loss_triggered:
             reward += self.stop_loss_penalty
 
-        # Trading cost penalty
-        if trade_executed:
-            position_value = self.balance * self.position_size_pct * self.leverage
-            fee = position_value * self.trading_fee
-            reward -= (fee / self.initial_balance) * 100
-
-        # Holding time reward
+        # === 9. 持倉時間獎勵（保留）===
         if self.position != 0 and equity_change > 0:
             reward += min(self.holding_time, self.max_holding_reward_bars) * self.holding_time_reward
 
-        # Daily drawdown penalty
+        # === 9.1 【v2 新增】超時持倉懲罰 ===
+        if self.position != 0 and self.holding_time > self.max_holding_bars:
+            # 超過最大持倉時間時給予持續懲罰
+            reward += self.overtime_holding_penalty
+
+        # === 10. 單日回撤限制懲罰（保留嚴格）===
         daily_drawdown = (self.daily_start_balance - self.equity) / self.daily_start_balance
         if daily_drawdown > self.max_daily_drawdown:
             reward += self.daily_drawdown_penalty
 
-        if self.no_position_window > 0 and self.no_position_penalty != 0.0:
-            if self.position == 0 and self.no_position_steps >= self.no_position_window:
-                reward += self.no_position_penalty
-
+        # 清理標記
         self.realized_this_step = False
         self.last_realized_pnl = 0.0
 
+        # 正規化（如果啟用）
         if self.normalize_reward:
             reward = self._normalize_reward(reward)
 
