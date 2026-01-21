@@ -76,6 +76,12 @@ training:
   save_freq: 10000                # 每 N 步保存一次模型
   eval_freq: 5000                 # 每 N 步評估一次
 
+  # 效能優化選項
+  enable_detailed_logging: false  # 是否記錄詳細訓練監控數據（34+ 指標）
+                                  # false = 只記錄基本指標（episode, reward, profit）
+                                  # true = 記錄所有指標（動作分布、損失函數、風險指標等）
+                                  # 建議：效能測試時設為 false，正式訓練設為 true
+
   # 輸出路徑
   model_save_dir: "models"
   log_dir: "logs"

@@ -17,6 +17,7 @@ class TrainingMetricsCallback(BaseCallback):
         episode_length: int,
         initial_capital: float,
         max_daily_drawdown: float,
+        enable_detailed_logging: bool = True,
         verbose: int = 0,
     ):
         super().__init__(verbose)
@@ -26,6 +27,7 @@ class TrainingMetricsCallback(BaseCallback):
         self.episode_length = episode_length
         self.initial_capital = initial_capital
         self.max_daily_drawdown = max_daily_drawdown
+        self.enable_detailed_logging = enable_detailed_logging
 
         self._file = None
         self._writer = None
@@ -43,6 +45,10 @@ class TrainingMetricsCallback(BaseCallback):
         self._episode_return_history: List[float] = []
         self._last_train_metrics: Dict[str, Optional[float]] = {}
 
+        # 效能優化：每 N 個 episodes 才 flush 一次
+        self._flush_interval = 20
+        self._episodes_since_last_flush = 0
+
     def _init_tracking(self, n_envs: int) -> None:
         self._episode_rewards = [0.0 for _ in range(n_envs)]
         self._episode_lengths = [0 for _ in range(n_envs)]
@@ -52,11 +58,20 @@ class TrainingMetricsCallback(BaseCallback):
     def _setup_csv(self) -> None:
         log_dir = Path(self.log_path).parent
         log_dir.mkdir(parents=True, exist_ok=True)
-        self._headers = [
+
+        # 基本指標（總是記錄）
+        basic_headers = [
             "timestamp",
             "timesteps",
             "episode",
             "episode_reward",
+            "episode_profit",
+            "episode_return_pct",
+            "total_trades_per_episode",
+        ]
+
+        # 詳細指標（可選）
+        detailed_headers = [
             "episode_reward_mean",
             "episode_reward_std",
             "episode_reward_max",
@@ -70,14 +85,11 @@ class TrainingMetricsCallback(BaseCallback):
             "approx_kl",
             "explained_variance",
             "learning_rate",
-            "total_trades_per_episode",
             "long_ratio",
             "short_ratio",
             "hold_ratio",
             "close_ratio",
             "avg_holding_time",
-            "episode_profit",
-            "episode_return_pct",
             "win_rate",
             "profit_factor",
             "sharpe_ratio",
@@ -93,6 +105,13 @@ class TrainingMetricsCallback(BaseCallback):
             "action_dist_2",
             "action_dist_3",
         ]
+
+        # 根據設定選擇要記錄的指標
+        if self.enable_detailed_logging:
+            self._headers = basic_headers + detailed_headers
+        else:
+            self._headers = basic_headers
+
         self._file = open(self.log_path, "w", newline="", encoding="utf-8")
         self._writer = csv.DictWriter(self._file, fieldnames=self._headers)
         self._writer.writeheader()
@@ -189,23 +208,8 @@ class TrainingMetricsCallback(BaseCallback):
     def _record_episode(self, env_idx: int, info: Dict) -> None:
         episode_reward = self._episode_rewards[env_idx]
         episode_length = self._episode_lengths[env_idx]
-        action_counts = self._episode_action_counts[env_idx]
-        action_total = int(action_counts.sum())
-
-        if action_total > 0:
-            action_dist = action_counts / action_total
-            action_entropy = -float(np.sum([p * math.log(p) for p in action_dist if p > 0]))
-        else:
-            action_dist = np.zeros(4, dtype=float)
-            action_entropy = 0.0
 
         total_trades = int(info.get("total_trades", 0))
-        avg_holding_time = (
-            float(self._episode_holding_steps[env_idx]) / max(total_trades, 1)
-            if total_trades >= 0
-            else 0.0
-        )
-
         equity = info.get("equity")
         episode_profit = float(equity - self.initial_capital) if equity is not None else None
         episode_return_pct = info.get("total_return_pct")
@@ -218,77 +222,122 @@ class TrainingMetricsCallback(BaseCallback):
         if episode_return_pct is not None:
             self._episode_return_history.append(float(episode_return_pct))
 
-        reward_array = np.array(self._episode_reward_history, dtype=float)
-        reward_mean = float(reward_array.mean()) if reward_array.size else 0.0
-        reward_std = float(reward_array.std()) if reward_array.size else 0.0
-        reward_max = float(reward_array.max()) if reward_array.size else 0.0
-        reward_min = float(reward_array.min()) if reward_array.size else 0.0
+        # === 詳細指標計算（僅在啟用時執行）===
+        if self.enable_detailed_logging:
+            action_counts = self._episode_action_counts[env_idx]
+            action_total = int(action_counts.sum())
 
-        returns_window = np.array(self._episode_return_history[-20:], dtype=float)
-        if returns_window.size >= 2:
-            sharpe_ratio = float(
-                returns_window.mean() / (returns_window.std() + 1e-8) * math.sqrt(252)
+            if action_total > 0:
+                action_dist = action_counts / action_total
+                action_entropy = -float(np.sum([p * math.log(p) for p in action_dist if p > 0]))
+            else:
+                action_dist = np.zeros(4, dtype=float)
+                action_entropy = 0.0
+
+            avg_holding_time = (
+                float(self._episode_holding_steps[env_idx]) / max(total_trades, 1)
+                if total_trades >= 0
+                else 0.0
+            )
+
+            reward_array = np.array(self._episode_reward_history, dtype=float)
+            reward_mean = float(reward_array.mean()) if reward_array.size else 0.0
+            reward_std = float(reward_array.std()) if reward_array.size else 0.0
+            reward_max = float(reward_array.max()) if reward_array.size else 0.0
+            reward_min = float(reward_array.min()) if reward_array.size else 0.0
+
+            returns_window = np.array(self._episode_return_history[-20:], dtype=float)
+            if returns_window.size >= 2:
+                sharpe_ratio = float(
+                    returns_window.mean() / (returns_window.std() + 1e-8) * math.sqrt(252)
+                )
+            else:
+                sharpe_ratio = 0.0
+
+            max_drawdown = info.get("max_drawdown")
+            daily_drawdown_violations = 1 if (
+                max_drawdown is not None and max_drawdown > self.max_daily_drawdown
+            ) else 0
+
+            episode_completion_rate = 1 if episode_length >= self.episode_length else 0
+            avg_equity_curve_slope = (
+                float(episode_return_pct) / episode_length
+                if episode_return_pct is not None and episode_length > 0
+                else 0.0
             )
         else:
-            sharpe_ratio = 0.0
+            # 簡化模式：不計算詳細指標
+            action_dist = None
+            action_entropy = None
+            avg_holding_time = None
+            reward_mean = None
+            reward_std = None
+            reward_max = None
+            reward_min = None
+            sharpe_ratio = None
+            max_drawdown = None
+            daily_drawdown_violations = None
+            episode_completion_rate = None
+            avg_equity_curve_slope = None
 
-        max_drawdown = info.get("max_drawdown")
-        daily_drawdown_violations = 1 if (
-            max_drawdown is not None and max_drawdown > self.max_daily_drawdown
-        ) else 0
-
-        episode_completion_rate = 1 if episode_length >= self.episode_length else 0
-        avg_equity_curve_slope = (
-            float(episode_return_pct) / episode_length
-            if episode_return_pct is not None and episode_length > 0
-            else 0.0
-        )
-
+        # 基本指標（總是記錄）
         row = {
             "timestamp": datetime.utcnow().isoformat(),
             "timesteps": int(self.num_timesteps),
             "episode": int(self._episode_counter),
             "episode_reward": float(episode_reward),
-            "episode_reward_mean": reward_mean,
-            "episode_reward_std": reward_std,
-            "episode_reward_max": reward_max,
-            "episode_reward_min": reward_min,
-            "cumulative_reward": float(self._cumulative_reward),
-            "policy_loss": self._last_train_metrics.get("policy_loss"),
-            "value_loss": self._last_train_metrics.get("value_loss"),
-            "entropy_loss": self._last_train_metrics.get("entropy_loss"),
-            "total_loss": self._last_train_metrics.get("total_loss"),
-            "clip_fraction": self._last_train_metrics.get("clip_fraction"),
-            "approx_kl": self._last_train_metrics.get("approx_kl"),
-            "explained_variance": self._last_train_metrics.get("explained_variance"),
-            "learning_rate": self._last_train_metrics.get("learning_rate"),
-            "total_trades_per_episode": total_trades,
-            "long_ratio": float(action_dist[1]) if action_total else 0.0,
-            "short_ratio": float(action_dist[2]) if action_total else 0.0,
-            "hold_ratio": float(action_dist[3]) if action_total else 0.0,
-            "close_ratio": float(action_dist[0]) if action_total else 0.0,
-            "avg_holding_time": avg_holding_time,
             "episode_profit": episode_profit,
             "episode_return_pct": episode_return_pct,
-            "win_rate": info.get("win_rate"),
-            "profit_factor": info.get("profit_factor"),
-            "sharpe_ratio": sharpe_ratio,
-            "max_drawdown": max_drawdown,
-            "stop_loss_count": info.get("stop_loss_count"),
-            "daily_drawdown_violations": daily_drawdown_violations,
-            "episode_length": episode_length,
-            "episode_completion_rate": episode_completion_rate,
-            "avg_equity_curve_slope": avg_equity_curve_slope,
-            "action_entropy": action_entropy,
-            "action_dist_0": float(action_dist[0]),
-            "action_dist_1": float(action_dist[1]),
-            "action_dist_2": float(action_dist[2]),
-            "action_dist_3": float(action_dist[3]),
+            "total_trades_per_episode": total_trades,
         }
+
+        # 詳細指標（僅在啟用時記錄）
+        if self.enable_detailed_logging:
+            detailed_data = {
+                "episode_reward_mean": reward_mean,
+                "episode_reward_std": reward_std,
+                "episode_reward_max": reward_max,
+                "episode_reward_min": reward_min,
+                "cumulative_reward": float(self._cumulative_reward),
+                "policy_loss": self._last_train_metrics.get("policy_loss"),
+                "value_loss": self._last_train_metrics.get("value_loss"),
+                "entropy_loss": self._last_train_metrics.get("entropy_loss"),
+                "total_loss": self._last_train_metrics.get("total_loss"),
+                "clip_fraction": self._last_train_metrics.get("clip_fraction"),
+                "approx_kl": self._last_train_metrics.get("approx_kl"),
+                "explained_variance": self._last_train_metrics.get("explained_variance"),
+                "learning_rate": self._last_train_metrics.get("learning_rate"),
+                "long_ratio": float(action_dist[1]),
+                "short_ratio": float(action_dist[2]),
+                "hold_ratio": float(action_dist[3]),
+                "close_ratio": float(action_dist[0]),
+                "avg_holding_time": avg_holding_time,
+                "win_rate": info.get("win_rate"),
+                "profit_factor": info.get("profit_factor"),
+                "sharpe_ratio": sharpe_ratio,
+                "max_drawdown": max_drawdown,
+                "stop_loss_count": info.get("stop_loss_count"),
+                "daily_drawdown_violations": daily_drawdown_violations,
+                "episode_length": episode_length,
+                "episode_completion_rate": episode_completion_rate,
+                "avg_equity_curve_slope": avg_equity_curve_slope,
+                "action_entropy": action_entropy,
+                "action_dist_0": float(action_dist[0]),
+                "action_dist_1": float(action_dist[1]),
+                "action_dist_2": float(action_dist[2]),
+                "action_dist_3": float(action_dist[3]),
+            }
+            row.update(detailed_data)
 
         if self._writer is not None:
             self._writer.writerow(row)
-            self._file.flush()
+
+            # 效能優化：每 20 個 episodes 才 flush 一次
+            self._episodes_since_last_flush += 1
+            if self._episodes_since_last_flush >= self._flush_interval:
+                self._file.flush()
+                self._episodes_since_last_flush = 0
+
         self._maybe_save_best(row)
 
     def _on_training_start(self) -> None:

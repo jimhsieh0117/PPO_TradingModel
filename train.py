@@ -219,7 +219,8 @@ def setup_callbacks(save_dir: str, config: dict):
     print(f"   ✅ Checkpoint Callback（每 {training_config.get('save_freq', 10000)} 步保存）")
 
     # 2. Training metrics callback - CSV log
-    
+    enable_detailed_logging = training_config.get('enable_detailed_logging', True)
+
     metrics_callback = TrainingMetricsCallback(
         log_path=f"{save_dir}/training_log.csv",
         best_model_path=f"{save_dir}/ppo_trading_model_best.zip",
@@ -227,10 +228,16 @@ def setup_callbacks(save_dir: str, config: dict):
         episode_length=training_config.get('episode_length', 1440),
         initial_capital=backtest_config.get('initial_capital', 10000.0),
         max_daily_drawdown=trading_config.get('daily_drawdown_limit', 0.10),
+        enable_detailed_logging=enable_detailed_logging,
         verbose=1
     )
     callbacks.append(metrics_callback)
-    print("   TrainingMetrics Callback: training log enabled")
+
+    if enable_detailed_logging:
+        print("   ✅ TrainingMetrics Callback: 詳細記錄模式 (34+ 指標)")
+    else:
+        print("   ✅ TrainingMetrics Callback: 精簡記錄模式 (7 基本指標)")
+        print("   ⚡ 效能優化：已停用詳細指標計算")
 
     callback_list = CallbackList(callbacks)
 
