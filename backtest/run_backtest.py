@@ -151,6 +151,8 @@ def build_metrics(stats: pd.Series, trades: pd.DataFrame) -> Dict:
 
 
 def main() -> None:
+    import time
+
     parser = argparse.ArgumentParser(description="Run PPO backtest with backtesting.py")
     parser.add_argument("--config", default="config.yaml", help="Config file path")
     parser.add_argument("--data", help="Test CSV path (optional)")
@@ -159,10 +161,16 @@ def main() -> None:
     parser.add_argument("--output-dir", help="Output directory (optional)")
     args = parser.parse_args()
 
+    print("=" * 60)
+    print("  PPO Trading Model - Backtest")
+    print("=" * 60)
+
     config = load_config(args.config)
 
+    print("\n[1/4] Loading test data...")
     df_raw, data_path = load_test_data(config, args.data)
     bt_data = normalize_ohlcv(df_raw)
+    print(f"      Loaded {len(bt_data):,} bars from {data_path.name}")
 
     models_dir = Path(config.get("training", {}).get("model_save_dir", "models"))
     run_dir = Path(args.run_dir) if args.run_dir else find_latest_run_dir(models_dir)
@@ -171,6 +179,7 @@ def main() -> None:
     backtest_config = config.get("backtest", {})
     trading_config = config.get("trading", {})
 
+    print(f"\n[2/4] Loading model: {model_path.name}")
     PPOTradingStrategy.model_path = str(model_path)
     PPOTradingStrategy.feature_config = config.get("features", {})
     PPOTradingStrategy.position_size_pct = float(trading_config.get("position_size_pct", 0.15))
@@ -185,8 +194,14 @@ def main() -> None:
         exclusive_orders=True,
     )
 
+    print("\n[3/4] Running backtest...")
+    start_time = time.time()
     stats = bt.run()
+    elapsed = time.time() - start_time
+    bars_per_sec = len(bt_data) / elapsed if elapsed > 0 else 0
+    print(f"      Completed in {elapsed:.2f}s ({bars_per_sec:,.0f} bars/sec)")
 
+    print("\n[4/4] Saving results...")
     output_dir = Path(args.output_dir) if args.output_dir else run_dir / "backtest_results"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -217,14 +232,23 @@ def main() -> None:
         "data_path": str(data_path),
         "model_path": str(model_path),
         "run_dir": str(run_dir),
+        "backtest_time_sec": elapsed,
+        "bars_per_sec": bars_per_sec,
     })
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as file:
         json.dump(metrics, file, indent=2, ensure_ascii=True)
 
-    print("Backtest completed.")
-    print(f"Model: {model_path}")
-    print(f"Data: {data_path}")
-    print(f"Output: {output_dir}")
+    print("\n" + "=" * 60)
+    print("  Backtest Results")
+    print("=" * 60)
+    print(f"  Total Return:    {metrics['total_return_pct']:+.2f}%")
+    print(f"  Sharpe Ratio:    {metrics['sharpe_ratio']:.2f}")
+    print(f"  Max Drawdown:    {metrics['max_drawdown_pct']:.2f}%")
+    print(f"  Win Rate:        {metrics['win_rate_pct']:.1f}%")
+    print(f"  Total Trades:    {metrics['total_trades']}")
+    print(f"  Stop Losses:     {metrics['stop_loss_count']}")
+    print("=" * 60)
+    print(f"\n  Output: {output_dir}")
 
 
 if __name__ == "__main__":

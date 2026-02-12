@@ -40,21 +40,21 @@ ppo:
   device: "cpu"                  # 訓練設備：cpu 或 cuda（GPU）
 
   # 學習參數
-  learning_rate: 0.0002           # 學習率（2e-4）
+  learning_rate: 0.00015          # 學習率（v5: 0.0002 → 0.00015 穩定學習）
   n_steps: 2048                   # 更新頻率（每 2048 steps 更新一次）- GPU 4096 CPU 2048
   batch_size: 64                 # 批次大小（GPU 優化）
 
-  n_epochs: 10                    # 每次更新訓練的輪數
+  n_epochs: 5                     # 每次更新訓練的輪數（v5: 10 → 5 減少過擬合）
 
   # 折扣與優勢估計
-  gamma: 0.99                     # 折扣因子
+  gamma: 0.95                     # 折扣因子
   gae_lambda: 0.95                # GAE Lambda 參數
 
   # PPO 特定參數
-  clip_range: 0.23                 # PPO Clip 範圍
+  clip_range: 0.2                 # PPO Clip 範圍（v5: 0.23 → 0.2 標準值）
   clip_range_vf: null             # Value Function Clip（null = 不裁剪）
-  ent_coef: 0.2                  # 熵係數（探索程度）
-  vf_coef: 0.5                    # Value Function 係數
+  ent_coef: 0.3                   # 熵係數（v5: 0.2 → 0.3 增加探索）
+  vf_coef: 2.0                    # Value Function 係數（v5: 0.5 → 1.0 加強 value network）
   max_grad_norm: 0.5              # 梯度裁剪
 
   # 神經網絡架構
@@ -69,7 +69,7 @@ ppo:
 training:
   # Episode 設定
   episode_length: 1440            # Episode 長度（1440 steps = 24 小時）
-  total_timesteps: 1000000        # 總訓練步數
+  total_timesteps: 130000        # 總訓練步數
 
   # 日誌與保存
   log_interval: 10                # 每 N 個 episode 記錄一次
@@ -77,7 +77,7 @@ training:
   eval_freq: 5000                 # 每 N 步評估一次
 
   # 效能優化選項
-  enable_detailed_logging: false  # 是否記錄詳細訓練監控數據（34+ 指標）
+  enable_detailed_logging: true  # 是否記錄詳細訓練監控數據（34+ 指標）
                                   # false = 只記錄基本指標（episode, reward, profit）
                                   # true = 記錄所有指標（動作分布、損失函數、風險指標等）
                                   # 建議：效能測試時設為 false，正式訓練設為 true
@@ -97,33 +97,37 @@ reward:
   floating_weight: 3               # 持倉浮盈/浮虧權重
   realized_weight: 3               # 平倉已實現盈虧權重
 
-  # === 開倉激勵（v4 平衡調整）===
-  open_position_reward: 10.0       # 開倉立即獎勵（v2:20 v3:3 → v4:10 折中）
-  profitable_open_bonus: 15.0      # 開倉後有浮盈時的額外獎勵（v2:50 v3:10 → v4:15）
+  # === 開倉激勵（v5 提高，鼓勵開倉）===
+  open_position_reward: 15.0       # 開倉立即獎勵（v4:10 → v5:15）
+  profitable_open_bonus: 20.0      # 開倉後有浮盈時的額外獎勵（v4:15 → v5:20）
 
-  # === 平倉獎勵（v4 適度降低）===
-  close_position_reward: 15.0      # 任何平倉都給基礎獎勵（v3:20 → v4:15）
+  # === 平倉獎勵（v5 大幅降低，防止過度平倉）===
+  close_position_reward: 0.03      # 任何平倉基礎獎勵（v4:15 → v5:3 大幅降低！）
 
-  # === 獲利平倉獎勵（v4 調整門檻）===
-  take_profit_reward: 40.0         # 獲利平倉額外獎勵（v3:50 → v4:40）
-  take_profit_threshold: 0.002     # 獲利門檻 0.2%（v3:0.1% → v4:0.2%）
+  # === 獲利平倉獎勵（v5 調整）===
+  take_profit_reward: 30.0         # 獲利平倉額外獎勵（v4:40 → v5:50）
+  take_profit_threshold: 0.003     # 獲利門檻 0.3%（v4:0.2% → v5:0.3%）
 
-  cut_loss_early_reward: 25.0      # 小虧主動平倉獎勵（v3:30 → v4:25）
+  cut_loss_early_reward: 20.0      # 小虧主動平倉獎勵（v4:25 → v5:20）
   cut_loss_threshold_min: -0.015   # 小虧範圍下限 -1.5%
-  cut_loss_threshold_max: -0.005   # 小虧範圍上限 -0.5%
+  cut_loss_threshold_max: -0.003   # 小虧範圍上限 -0.3%（v4:-0.5% → v5:-0.3%）
 
-  # === 快速換倉懲罰（v4 大幅減輕）===
-  rapid_switch_penalty: -15.0      # 快速換倉懲罰（v3:-50 → v4:-15，減少70%）
-  rapid_switch_window: 5           # 5 根 K 線（5 分鐘）內換倉觸發（v3:10 → v4:5）
+  # === 過度平倉懲罰（v5 新增！防止 close 動作過多）===
+  excessive_close_penalty: -15.0    # *** v5 新增：連續平倉懲罰 ***
+  excessive_close_window: 3        # 3 步內再次平倉觸發懲罰
 
-  # === 持有獎勵/懲罰（v4 調整）===
-  holding_profit_reward: 2.0       # 持有獲利倉位每步獎勵（v3:3.0 → v4:2.0）
-  holding_loss_penalty: -2.0       # 持有虧損倉位懲罰（v3:-1.0 → v4:-2.0，略提高）
+  # === 快速換倉懲罰（v5 調整）===
+  rapid_switch_penalty: -20.0      # 快速換倉懲罰（v4:-15 → v5:-20）
+  rapid_switch_window: 5           # 5 根 K 線（5 分鐘）內換倉觸發
+
+  # === 持有獎勵/懲罰（v5 提高持有獎勵）===
+  holding_profit_reward: 5.0       # 持有獲利倉位每步獎勵（v4:2.0 → v5:5.0 大幅提高！）
+  holding_loss_penalty: -1.5       # 持有虧損倉位懲罰（v4:-2.0 → v5:-1.5）
   holding_loss_threshold: 0.015    # 虧損門檻 1.5%
 
-  # === 過度 Hold 懲罰（v4 新增 - 防止過於保守）===
-  excessive_hold_penalty: -1.0     # *** v4 新增：連續 Hold 懲罰 ***
-  excessive_hold_window: 20        # 連續 Hold 超過 20 步開始懲罰
+  # === 過度 Hold 懲罰（v5 調整）===
+  excessive_hold_penalty: -0.5     # 連續 Hold 懲罰（v4:-1.0 → v5:-0.5 降低）
+  excessive_hold_window: 30        # 連續 Hold 超過 30 步開始懲罰（v4:20 → v5:30）
 
   # === 持倉時間限制（v4 調整）===
   max_holding_bars: 120            # 最多持倉 2 小時

@@ -177,6 +177,10 @@ class TradingEnv(gym.Env):
         self.excessive_hold_penalty = float(self.reward_config.get('excessive_hold_penalty', -1.0))
         self.excessive_hold_window = int(self.reward_config.get('excessive_hold_window', 20))
 
+        # 過度平倉懲罰（v5 新增 - 防止 close 動作過多）
+        self.excessive_close_penalty = float(self.reward_config.get('excessive_close_penalty', -8.0))
+        self.excessive_close_window = int(self.reward_config.get('excessive_close_window', 3))
+
         # 持倉時間限制（v4 調整）
         self.max_holding_bars = int(self.reward_config.get('max_holding_bars', 120))
         self.min_holding_bars = int(self.reward_config.get('min_holding_bars', 3))
@@ -229,15 +233,21 @@ class TradingEnv(gym.Env):
         # v4 新增：追蹤連續 Hold 次數（用於檢測過度保守）
         self.consecutive_hold_steps = 0  # 連續 Hold 的步數
 
+        # v5 新增：追蹤上次平倉時間（用於檢測過度平倉）
+        self.last_close_step = -999  # 上次平倉的 step
+
         # === 權益曲線（用於計算回撤）===
         self.equity_curve = [initial_balance]
         self.peak_equity = initial_balance
-        # === ??????Welford?===
+
+        # === Reward Normalization (EMA-based, v6 改進) ===
         self.normalize_reward = True
-        self._reward_count = 0
-        self._reward_mean = 0.0
-        self._reward_m2 = 0.0
-        self._reward_clip = 10.0
+        self._reward_ema_mean = 0.0      # EMA of reward mean
+        self._reward_ema_var = 1.0       # EMA of reward variance
+        self._reward_ema_alpha = 0.01    # EMA decay rate (smaller = more stable)
+        self._reward_clip = 5.0          # Clip normalized rewards to [-5, 5]
+        self._reward_warmup = 100        # Warmup steps before normalization
+        self._reward_step_count = 0
 
     def reset(
         self,
@@ -284,9 +294,17 @@ class TradingEnv(gym.Env):
         self.stop_loss_count = 0
         self.holding_time = 0
 
+        # 重置動作追蹤（v3/v4/v5）
+        self.last_open_step = -999
+        self.consecutive_hold_steps = 0
+        self.last_close_step = -999
+
         # 重置權益曲線
         self.equity_curve = [self.initial_balance]
         self.peak_equity = self.initial_balance
+
+        # 注意：reward normalization EMA 統計不重置，保持跨 episode 連續性
+        # 只重置 step count 以確保 warmup 正確（可選，這裡保持累積）
 
         # 獲取初始觀察
         observation = self._get_observation()
@@ -594,6 +612,15 @@ class TradingEnv(gym.Env):
             # 任何平倉都給基礎獎勵（鼓勵主動平倉）
             reward += self.close_position_reward
 
+            # 【v5 新增】檢測過度平倉
+            steps_since_last_close = self.current_step - self.last_close_step
+            if steps_since_last_close < self.excessive_close_window:
+                # 過度平倉懲罰
+                reward += self.excessive_close_penalty
+
+            # 更新上次平倉時間
+            self.last_close_step = self.current_step
+
             # 計算已實現盈虧
             realized_return = self.last_realized_pnl / self.initial_balance
             if realized_return > 0:
@@ -712,25 +739,42 @@ class TradingEnv(gym.Env):
 
     def _normalize_reward(self, reward: float) -> float:
         """
-        以Welfor線上統計做標準化，比免獎勵尺度過大
+        EMA-based reward normalization (v6 改進)
+
+        優點：
+        1. 更快適應 reward 分布變化
+        2. 不會被早期極端值永久影響
+        3. Warmup 期間返回縮放後的原始值
         """
-        self._reward_count += 1
-        delta = reward - self._reward_mean
-        self._reward_mean += delta / self._reward_count
-        delta2 = reward - self._reward_mean
-        self._reward_m2 += delta * delta2
+        self._reward_step_count += 1
+        alpha = self._reward_ema_alpha
 
-        if self._reward_count < 2:
-            return 0.0
+        # Warmup 期間：收集統計但返回縮放後的原始值
+        if self._reward_step_count <= self._reward_warmup:
+            # 快速初始化 EMA（使用較大的 alpha）
+            init_alpha = 0.1
+            self._reward_ema_mean = (1 - init_alpha) * self._reward_ema_mean + init_alpha * reward
+            delta = reward - self._reward_ema_mean
+            self._reward_ema_var = (1 - init_alpha) * self._reward_ema_var + init_alpha * (delta ** 2)
+            # 返回簡單縮放的值
+            return reward / 100.0  # 假設 reward 範圍約 [-500, 500]
 
-        variance = self._reward_m2 / (self._reward_count - 1)
-        std = math.sqrt(variance) if variance > 0.0 else 0.0
-        if std == 0.0:
-            return 0.0
+        # 更新 EMA 統計
+        self._reward_ema_mean = (1 - alpha) * self._reward_ema_mean + alpha * reward
+        delta = reward - self._reward_ema_mean
+        self._reward_ema_var = (1 - alpha) * self._reward_ema_var + alpha * (delta ** 2)
 
-        normalized = (reward - self._reward_mean) / (std + 1e-8)
+        # 計算標準差
+        std = math.sqrt(self._reward_ema_var) if self._reward_ema_var > 0 else 1.0
+        std = max(std, 1e-8)  # 避免除以零
+
+        # 正規化
+        normalized = (reward - self._reward_ema_mean) / std
+
+        # Clip
         if self._reward_clip is not None:
             normalized = max(min(normalized, self._reward_clip), -self._reward_clip)
+
         return float(normalized)
 
     def _check_termination(self) -> bool:
