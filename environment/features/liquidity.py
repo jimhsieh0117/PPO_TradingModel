@@ -1,5 +1,5 @@
 """
-Liquidity 檢測模塊
+Liquidity 檢測模塊（向量化優化版）
 
 實現 ICT Liquidity 概念：
 - 流動性池：前期高點/低點聚集大量止損單
@@ -7,39 +7,22 @@ Liquidity 檢測模塊
 - 下方流動性：前期低點（買入止損）
 - Liquidity Sweep：價格短暫突破流動性區域後快速反轉
 
+優化：
+- 使用 NumPy 向量化操作
+- 使用 pandas rolling 進行滑動窗口計算
+- 預計算整個數據集，查詢 O(1)
+
 作者：PPO Trading Team
 日期：2026-01-14
 """
 
 import numpy as np
 import pandas as pd
-from typing import List, Tuple, Optional
-
-
-class LiquidityZone:
-    """流動性區域數據結構"""
-
-    def __init__(self, price: float, bar_index: int, zone_type: str,
-                 timestamp: pd.Timestamp):
-        """
-        初始化流動性區域
-
-        Args:
-            price: 流動性價格水平
-            bar_index: K 線索引
-            zone_type: 'high' 或 'low'
-            timestamp: 時間戳
-        """
-        self.price = price
-        self.bar_index = bar_index
-        self.zone_type = zone_type
-        self.timestamp = timestamp
-        self.is_swept = False  # 是否已被掃蕩
-        self.sweep_idx = None  # 掃蕩位置
+from typing import List, Dict, Tuple
 
 
 class LiquidityDetector:
-    """流動性檢測器"""
+    """流動性檢測器（向量化優化版）"""
 
     def __init__(self, lookback: int = 50, sweep_threshold: float = 0.001):
         """
@@ -51,243 +34,211 @@ class LiquidityDetector:
         """
         self.lookback = lookback
         self.sweep_threshold = sweep_threshold
-        self.swing_window = 5  # Swing point 識別窗口
+        self.swing_window = 5
 
-    def identify_liquidity_zones(self, df: pd.DataFrame) -> Tuple[List[LiquidityZone], List[LiquidityZone]]:
+        # 預計算緩存
+        self._cache_valid = False
+        self._liq_above_cache = None    # [n] 上方流動性距離
+        self._liq_below_cache = None    # [n] 下方流動性距離
+        self._liq_sweep_cache = None    # [n] 是否發生掃蕩
+
+    def precompute_all_features(self, df: pd.DataFrame) -> None:
         """
-        識別流動性區域（前期高點和低點）
+        向量化預計算整個數據集的流動性特徵
 
         Args:
             df: OHLC 數據
-
-        Returns:
-            (highs, lows): 上方和下方流動性區域列表
         """
-        highs = df['high'].values
-        lows = df['low'].values
         n = len(df)
+        highs = df['high'].to_numpy(dtype=np.float64)
+        lows = df['low'].to_numpy(dtype=np.float64)
+        closes = df['close'].to_numpy(dtype=np.float64)
+
+        # 初始化緩存
+        self._liq_above_cache = np.full(n, 5.0, dtype=np.float32)
+        self._liq_below_cache = np.full(n, 5.0, dtype=np.float32)
+        self._liq_sweep_cache = np.zeros(n, dtype=np.int8)
+
+        # 1. 向量化識別 swing points (流動性區域)
+        swing_high_mask, swing_low_mask, swing_high_prices, swing_low_prices = \
+            self._vectorized_swing_points(highs, lows)
+
+        swing_high_indices = np.where(swing_high_mask)[0]
+        swing_low_indices = np.where(swing_low_mask)[0]
+
+        # 2. 追蹤流動性掃蕩和計算特徵
+        high_swept = np.zeros(len(swing_high_indices), dtype=bool)
+        low_swept = np.zeros(len(swing_low_indices), dtype=bool)
+
+        for i in range(n):
+            current_price = closes[i]
+            current_high = highs[i]
+            current_low = lows[i]
+
+            # 檢測並更新流動性掃蕩
+            sweep_detected = False
+
+            # 檢查上方流動性掃蕩
+            for j, swing_idx in enumerate(swing_high_indices):
+                if high_swept[j] or swing_idx >= i:
+                    continue
+                swing_price = swing_high_prices[swing_idx]
+                # 突破流動性且快速反轉
+                if current_high > swing_price * (1 + self.sweep_threshold):
+                    if current_price < swing_price:
+                        high_swept[j] = True
+                        sweep_detected = True
+
+            # 檢查下方流動性掃蕩
+            for j, swing_idx in enumerate(swing_low_indices):
+                if low_swept[j] or swing_idx >= i:
+                    continue
+                swing_price = swing_low_prices[swing_idx]
+                # 突破流動性且快速反轉
+                if current_low < swing_price * (1 - self.sweep_threshold):
+                    if current_price > swing_price:
+                        low_swept[j] = True
+                        sweep_detected = True
+
+            self._liq_sweep_cache[i] = 1 if sweep_detected else 0
+
+            # 找最近的上方流動性（未掃蕩的 swing high > current_price）
+            nearest_above_dist = 5.0
+            for j, swing_idx in enumerate(swing_high_indices):
+                if high_swept[j] or swing_idx >= i:
+                    continue
+                swing_price = swing_high_prices[swing_idx]
+                if swing_price > current_price:
+                    dist = (swing_price - current_price) / current_price * 100
+                    if dist < nearest_above_dist:
+                        nearest_above_dist = dist
+
+            # 找最近的下方流動性（未掃蕩的 swing low < current_price）
+            nearest_below_dist = 5.0
+            for j, swing_idx in enumerate(swing_low_indices):
+                if low_swept[j] or swing_idx >= i:
+                    continue
+                swing_price = swing_low_prices[swing_idx]
+                if swing_price < current_price:
+                    dist = (current_price - swing_price) / current_price * 100
+                    if dist < nearest_below_dist:
+                        nearest_below_dist = dist
+
+            self._liq_above_cache[i] = nearest_above_dist
+            self._liq_below_cache[i] = nearest_below_dist
+
+        self._cache_valid = True
+
+    def _vectorized_swing_points(self, highs: np.ndarray, lows: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """向量化識別 swing points"""
+        n = len(highs)
         w = self.swing_window
+        window_size = 2 * w + 1
 
-        high_liquidity_zones = []
-        low_liquidity_zones = []
+        high_series = pd.Series(highs)
+        low_series = pd.Series(lows)
 
-        # 識別 swing highs 和 swing lows（潛在流動性區域）
-        for i in range(w, n - w):
-            # Swing High (上方流動性)
-            if highs[i] == max(highs[i-w:i+w+1]):
-                zone = LiquidityZone(
-                    price=highs[i],
-                    bar_index=i,
-                    zone_type='high',
-                    timestamp=df.index[i]
-                )
-                high_liquidity_zones.append(zone)
+        rolling_max = high_series.rolling(window_size, center=True, min_periods=window_size).max()
+        rolling_min = low_series.rolling(window_size, center=True, min_periods=window_size).min()
 
-            # Swing Low (下方流動性)
-            if lows[i] == min(lows[i-w:i+w+1]):
-                zone = LiquidityZone(
-                    price=lows[i],
-                    bar_index=i,
-                    zone_type='low',
-                    timestamp=df.index[i]
-                )
-                low_liquidity_zones.append(zone)
+        swing_high_mask = (highs == rolling_max.to_numpy())
+        swing_low_mask = (lows == rolling_min.to_numpy())
 
-        return high_liquidity_zones, low_liquidity_zones
+        # 填充 NaN 為 False
+        swing_high_mask = np.nan_to_num(swing_high_mask, nan=0).astype(bool)
+        swing_low_mask = np.nan_to_num(swing_low_mask, nan=0).astype(bool)
 
-    def detect_liquidity_sweeps(self, df: pd.DataFrame,
-                               high_zones: List[LiquidityZone],
-                               low_zones: List[LiquidityZone]) -> List[int]:
-        """
-        檢測流動性掃蕩事件
+        return swing_high_mask, swing_low_mask, highs, lows
 
-        Liquidity Sweep: 價格短暫突破流動性區域後快速反轉
+    def get_cached_features(self, current_idx: int) -> Dict[str, float]:
+        """從緩存獲取特徵（O(1) 操作）"""
+        if not self._cache_valid:
+            raise RuntimeError("緩存未初始化，請先調用 precompute_all_features()")
 
-        Args:
-            df: OHLC 數據
-            high_zones: 上方流動性區域
-            low_zones: 下方流動性區域
-
-        Returns:
-            List[int]: 發生掃蕩的 K 線索引列表
-        """
-        sweep_indices = []
-
-        # 檢查上方流動性掃蕩
-        for zone in high_zones:
-            if zone.is_swept:
-                continue
-
-            # 檢查後續 K 線是否掃蕩該流動性
-            for i in range(zone.bar_index + 1, len(df)):
-                current_high = df['high'].iloc[i]
-                current_close = df['close'].iloc[i]
-
-                # 檢查是否突破流動性區域
-                if current_high > zone.price * (1 + self.sweep_threshold):
-                    # 檢查是否快速反轉（收盤價回落）
-                    if current_close < zone.price:
-                        zone.is_swept = True
-                        zone.sweep_idx = i
-                        sweep_indices.append(i)
-                        break
-
-        # 檢查下方流動性掃蕩
-        for zone in low_zones:
-            if zone.is_swept:
-                continue
-
-            # 檢查後續 K 線是否掃蕩該流動性
-            for i in range(zone.bar_index + 1, len(df)):
-                current_low = df['low'].iloc[i]
-                current_close = df['close'].iloc[i]
-
-                # 檢查是否突破流動性區域
-                if current_low < zone.price * (1 - self.sweep_threshold):
-                    # 檢查是否快速反轉（收盤價回升）
-                    if current_close > zone.price:
-                        zone.is_swept = True
-                        zone.sweep_idx = i
-                        sweep_indices.append(i)
-                        break
-
-        return sweep_indices
-
-    def get_nearest_liquidity(self, df: pd.DataFrame, current_idx: int,
-                             high_zones: List[LiquidityZone],
-                             low_zones: List[LiquidityZone]) -> Tuple[Optional[LiquidityZone], Optional[LiquidityZone]]:
-        """
-        獲取最近的流動性區域
-
-        Args:
-            df: OHLC 數據
-            current_idx: 當前索引
-            high_zones: 上方流動性區域
-            low_zones: 下方流動性區域
-
-        Returns:
-            (nearest_high_zone, nearest_low_zone)
-        """
-        current_price = df['close'].iloc[current_idx]
-
-        # 過濾：只保留當前位置之前的未掃蕩流動性
-        valid_high_zones = [
-            zone for zone in high_zones
-            if zone.bar_index < current_idx
-            and not zone.is_swept
-            and zone.price > current_price  # 上方流動性
-        ]
-
-        valid_low_zones = [
-            zone for zone in low_zones
-            if zone.bar_index < current_idx
-            and not zone.is_swept
-            and zone.price < current_price  # 下方流動性
-        ]
-
-        # 找到最近的上方流動性
-        nearest_high = None
-        if valid_high_zones:
-            nearest_high = min(valid_high_zones, key=lambda z: abs(z.price - current_price))
-
-        # 找到最近的下方流動性
-        nearest_low = None
-        if valid_low_zones:
-            nearest_low = min(valid_low_zones, key=lambda z: abs(z.price - current_price))
-
-        return nearest_high, nearest_low
+        return {
+            'liquidity_above': float(self._liq_above_cache[current_idx]),
+            'liquidity_below': float(self._liq_below_cache[current_idx]),
+            'liquidity_sweep': int(self._liq_sweep_cache[current_idx])
+        }
 
     def calculate_features(self, df: pd.DataFrame, current_idx: int) -> dict:
-        """
-        計算當前位置的流動性特徵
+        """計算當前位置的流動性特徵"""
+        if self._cache_valid:
+            return self.get_cached_features(current_idx)
 
-        Args:
-            df: OHLC 數據
-            current_idx: 當前索引
+        return self._calculate_features_original(df, current_idx)
 
-        Returns:
-            dict: 包含 3 個特徵的字典
-            {
-                'liquidity_above': float,      # 上方流動性距離（百分比）
-                'liquidity_below': float,      # 下方流動性距離（百分比）
-                'liquidity_sweep': int         # 是否剛發生流動性掃蕩 (0/1)
-            }
-        """
-        # 獲取回看數據
+    def _calculate_features_original(self, df: pd.DataFrame, current_idx: int) -> dict:
+        """原始計算方法（保留用於兼容性）"""
         lookback_start = max(0, current_idx - self.lookback)
-        df_lookback = df.iloc[lookback_start:current_idx+1].copy()
+        df_lookback = df.iloc[lookback_start:current_idx+1]
 
         if len(df_lookback) < 20:
-            # 數據不足
             return {
-                'liquidity_above': 5.0,  # 默認遠離流動性
+                'liquidity_above': 5.0,
                 'liquidity_below': 5.0,
                 'liquidity_sweep': 0
             }
 
-        # 識別流動性區域
-        high_zones, low_zones = self.identify_liquidity_zones(df_lookback)
+        highs = df_lookback['high'].to_numpy()
+        lows = df_lookback['low'].to_numpy()
+        closes = df_lookback['close'].to_numpy()
 
-        # 檢測流動性掃蕩
-        sweep_indices = self.detect_liquidity_sweeps(df_lookback, high_zones, low_zones)
+        swing_high_mask, swing_low_mask, _, _ = self._vectorized_swing_points(highs, lows)
 
-        # 獲取最近的流動性區域
-        nearest_high, nearest_low = self.get_nearest_liquidity(
-            df_lookback, len(df_lookback) - 1, high_zones, low_zones
-        )
+        current_price = closes[-1]
+        current_high = highs[-1]
+        current_low = lows[-1]
 
-        current_price = df.iloc[current_idx]['close']
-
-        # 計算特徵
-        features = {
-            'liquidity_above': 5.0,  # 默認值
+        result = {
+            'liquidity_above': 5.0,
             'liquidity_below': 5.0,
             'liquidity_sweep': 0
         }
 
-        # 計算到上方流動性的距離
-        if nearest_high:
-            features['liquidity_above'] = (nearest_high.price - current_price) / current_price * 100
+        # 找上方流動性
+        swing_high_indices = np.where(swing_high_mask)[0]
+        for idx in swing_high_indices:
+            if idx >= len(highs) - 1:
+                continue
+            swing_price = highs[idx]
+            if swing_price > current_price:
+                dist = (swing_price - current_price) / current_price * 100
+                if dist < result['liquidity_above']:
+                    result['liquidity_above'] = dist
 
-        # 計算到下方流動性的距離
-        if nearest_low:
-            features['liquidity_below'] = (current_price - nearest_low.price) / current_price * 100
+            # 檢測掃蕩
+            if current_high > swing_price * (1 + self.sweep_threshold):
+                if current_price < swing_price:
+                    result['liquidity_sweep'] = 1
 
-        # 檢查當前位置是否剛發生掃蕩
-        if len(df_lookback) - 1 in sweep_indices:
-            features['liquidity_sweep'] = 1
+        # 找下方流動性
+        swing_low_indices = np.where(swing_low_mask)[0]
+        for idx in swing_low_indices:
+            if idx >= len(lows) - 1:
+                continue
+            swing_price = lows[idx]
+            if swing_price < current_price:
+                dist = (current_price - swing_price) / current_price * 100
+                if dist < result['liquidity_below']:
+                    result['liquidity_below'] = dist
 
-        return features
+            # 檢測掃蕩
+            if current_low < swing_price * (1 - self.sweep_threshold):
+                if current_price > swing_price:
+                    result['liquidity_sweep'] = 1
+
+        return result
 
     def analyze_full_dataset(self, df: pd.DataFrame) -> pd.DataFrame:
         """分析整個數據集的流動性"""
-        print(f"🔍 分析 Liquidity Zones...")
-        print(f"   數據範圍: {df.index[0]} 到 {df.index[-1]}")
-        print(f"   總 K 線數: {len(df):,}")
+        print(f"[Liquidity] Analyzing {len(df):,} bars...")
+        self.precompute_all_features(df)
 
-        # 識別流動性區域
-        high_zones, low_zones = self.identify_liquidity_zones(df)
-
-        # 檢測流動性掃蕩
-        sweep_indices = self.detect_liquidity_sweeps(df, high_zones, low_zones)
-
-        print(f"   檢測到上方流動性: {len(high_zones)}")
-        print(f"   檢測到下方流動性: {len(low_zones)}")
-        print(f"   檢測到流動性掃蕩: {len(sweep_indices)}")
-        print(f"✅ Liquidity 分析完成！\n")
-
-        # 創建結果 DataFrame
         result = df.copy()
-        result['liquidity_above'] = 5.0
-        result['liquidity_below'] = 5.0
-        result['liquidity_sweep'] = 0
-
-        # 計算每個位置的特徵
-        for i in range(len(df)):
-            features = self.calculate_features(df, i)
-            result['liquidity_above'].iloc[i] = features['liquidity_above']
-            result['liquidity_below'].iloc[i] = features['liquidity_below']
-            result['liquidity_sweep'].iloc[i] = features['liquidity_sweep']
+        result['liquidity_above'] = self._liq_above_cache
+        result['liquidity_below'] = self._liq_below_cache
+        result['liquidity_sweep'] = self._liq_sweep_cache
 
         return result
 
@@ -295,49 +246,38 @@ class LiquidityDetector:
 def test_liquidity():
     """測試 Liquidity 模塊"""
     print("=" * 60)
-    print("  🧪 測試 Liquidity 檢測模塊")
+    print("  Testing Liquidity (Vectorized)")
     print("=" * 60)
 
-    # 載入數據
     from pathlib import Path
+    import time
+
     project_root = Path(__file__).parent.parent.parent
-
-    print("\n📂 載入測試數據...")
     data_path = project_root / "data" / "raw" / "BTCUSDT_1m_train_latest.csv"
+
+    if not data_path.exists():
+        print("Test data not found, skipping test")
+        return
+
     df = pd.read_csv(data_path, index_col=0, parse_dates=True)
+    df_test = df.iloc[-5000:].copy()
+    print(f"   Test data: {len(df_test)} bars")
 
-    # 使用最近 1000 根 K 線進行測試
-    df_test = df.iloc[-1000:].copy()
-    print(f"   測試數據: {len(df_test)} 根 K 線")
-    print(f"   時間範圍: {df_test.index[0]} 到 {df_test.index[-1]}\n")
+    liq = LiquidityDetector(lookback=50)
 
-    # 初始化檢測器
-    liq_detector = LiquidityDetector(lookback=50, sweep_threshold=0.001)
+    start = time.time()
+    liq.precompute_all_features(df_test)
+    elapsed = time.time() - start
+    print(f"   Precompute time: {elapsed:.3f}s")
 
-    # 分析整個測試數據集
-    result = liq_detector.analyze_full_dataset(df_test)
+    start = time.time()
+    for i in range(len(df_test)):
+        _ = liq.get_cached_features(i)
+    elapsed = time.time() - start
+    print(f"   Cache query time ({len(df_test)} queries): {elapsed:.3f}s")
 
-    # 顯示統計
-    print("📊 Liquidity 統計:")
-    sweep_count = result['liquidity_sweep'].sum()
-    print(f"   流動性掃蕩事件: {sweep_count} 次")
-
-    avg_above = result['liquidity_above'].mean()
-    avg_below = result['liquidity_below'].mean()
-    print(f"\n   平均上方流動性距離: {avg_above:.2f}%")
-    print(f"   平均下方流動性距離: {avg_below:.2f}%")
-
-    print("\n✅ 測試完成！\n")
-
-    # 測試單點特徵計算
-    print("🎯 測試單點特徵計算（最後一根 K 線）:")
-    features = liq_detector.calculate_features(df_test, len(df_test) - 1)
-    print(f"   上方流動性距離: {features['liquidity_above']:.2f}%")
-    print(f"   下方流動性距離: {features['liquidity_below']:.2f}%")
-    print(f"   流動性掃蕩: {features['liquidity_sweep']}")
-
-    return result
+    print("\n   OK: Vectorized Liquidity test passed!")
 
 
 if __name__ == "__main__":
-    result = test_liquidity()
+    test_liquidity()

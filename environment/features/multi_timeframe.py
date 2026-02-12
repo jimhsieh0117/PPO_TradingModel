@@ -25,6 +25,78 @@ class MultiTimeframeAnalyzer:
             '5m': 5,   # 5分鐘 = 5 根 1分K
             '15m': 15  # 15分鐘 = 15 根 1分K
         }
+        # 預計算緩存
+        self._cache_valid = False
+        self._trend_5m_cache = None
+        self._trend_15m_cache = None
+
+    def precompute_all_features(self, df: pd.DataFrame) -> None:
+        """
+        預計算整個數據集的多時間框架特徵（一次性計算，避免每 step 重複）
+
+        這是核心優化：將 O(n²) 複雜度降低到 O(n)
+
+        Args:
+            df: 完整的 1分K OHLCV 數據（必須有 DatetimeIndex）
+        """
+        n = len(df)
+        self._trend_5m_cache = np.zeros(n, dtype=np.int8)
+        self._trend_15m_cache = np.zeros(n, dtype=np.int8)
+
+        # 一次性重採樣整個數據集
+        df_5m = self.resample_to_timeframe(df, 5)
+        df_15m = self.resample_to_timeframe(df, 15)
+
+        # 計算 5m 趨勢（整個序列）
+        if len(df_5m) >= 10:
+            short_ma_5m = df_5m['close'].rolling(window=5, min_periods=1).mean()
+            long_ma_5m = df_5m['close'].rolling(window=10, min_periods=1).mean()
+
+            # 向量化趨勢計算
+            trend_5m_series = np.where(
+                short_ma_5m > long_ma_5m * 1.001, 1,
+                np.where(short_ma_5m < long_ma_5m * 0.999, -1, 0)
+            )
+
+            # 將 5m 趨勢映射回 1m 頻率
+            # 使用 reindex + ffill 對齊時間戳
+            trend_5m_df = pd.Series(trend_5m_series, index=df_5m.index)
+            trend_5m_aligned = trend_5m_df.reindex(df.index, method='ffill').fillna(0)
+            self._trend_5m_cache = trend_5m_aligned.values.astype(np.int8)
+
+        # 計算 15m 趨勢（整個序列）
+        if len(df_15m) >= 10:
+            short_ma_15m = df_15m['close'].rolling(window=5, min_periods=1).mean()
+            long_ma_15m = df_15m['close'].rolling(window=10, min_periods=1).mean()
+
+            trend_15m_series = np.where(
+                short_ma_15m > long_ma_15m * 1.001, 1,
+                np.where(short_ma_15m < long_ma_15m * 0.999, -1, 0)
+            )
+
+            trend_15m_df = pd.Series(trend_15m_series, index=df_15m.index)
+            trend_15m_aligned = trend_15m_df.reindex(df.index, method='ffill').fillna(0)
+            self._trend_15m_cache = trend_15m_aligned.values.astype(np.int8)
+
+        self._cache_valid = True
+
+    def get_cached_features(self, current_idx: int) -> Dict[str, int]:
+        """
+        從緩存獲取特徵（O(1) 操作）
+
+        Args:
+            current_idx: 當前索引
+
+        Returns:
+            dict: {'trend_5m': int, 'trend_15m': int}
+        """
+        if not self._cache_valid:
+            raise RuntimeError("緩存未初始化，請先調用 precompute_all_features()")
+
+        return {
+            'trend_5m': int(self._trend_5m_cache[current_idx]),
+            'trend_15m': int(self._trend_15m_cache[current_idx])
+        }
 
     def resample_to_timeframe(self, df: pd.DataFrame, minutes: int) -> pd.DataFrame:
         """
@@ -125,6 +197,8 @@ class MultiTimeframeAnalyzer:
         """
         計算多時間框架特徵
 
+        優化版本：優先使用預計算緩存（O(1)），否則回退到原始計算
+
         Args:
             df: 1分K OHLCV 數據
             current_idx: 當前索引
@@ -135,6 +209,11 @@ class MultiTimeframeAnalyzer:
                 'trend_15m': int   # -1/0/1
             }
         """
+        # 優先使用緩存（極快）
+        if self._cache_valid and self._trend_5m_cache is not None:
+            return self.get_cached_features(current_idx)
+
+        # 回退到原始計算（兼容舊代碼）
         # 獲取當前時間之前的數據（避免未來洩漏）
         df_before = df.iloc[:current_idx+1].copy()
 

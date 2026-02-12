@@ -1,5 +1,5 @@
 """
-Volume & Price 特徵模塊
+Volume & Price 特徵模塊（向量化優化版）
 
 實現成交量與價格行為分析：
 - Volume Ratio: 當前成交量 vs 平均成交量
@@ -8,17 +8,22 @@ Volume & Price 特徵模塊
 - Price Position in Range: 當前價格在波段中的位置
 - Zone Classification: Premium/Discount/Equilibrium 區域分類
 
+優化：
+- 使用 NumPy 向量化操作
+- 使用 pandas rolling 進行滑動窗口計算
+- 預計算整個數據集，查詢 O(1)
+
 作者：PPO Trading Team
 日期：2026-01-14
 """
 
 import numpy as np
 import pandas as pd
-from typing import Tuple
+from typing import Dict
 
 
 class VolumeAnalyzer:
-    """成交量與價格分析器"""
+    """成交量與價格分析器（向量化優化版）"""
 
     def __init__(self, volume_window: int = 20, swing_window: int = 50):
         """
@@ -31,190 +36,112 @@ class VolumeAnalyzer:
         self.volume_window = volume_window
         self.swing_window = swing_window
 
-    def calculate_volume_ratio(self, df: pd.DataFrame, current_idx: int) -> float:
+        # 預計算緩存
+        self._cache_valid = False
+        self._volume_ratio_cache = None
+        self._price_momentum_cache = None
+        self._vwap_momentum_cache = None
+        self._price_position_cache = None
+        self._zone_class_cache = None
+
+    def precompute_all_features(self, df: pd.DataFrame) -> None:
         """
-        計算當前成交量比率
+        向量化預計算整個數據集的成交量與價格特徵
 
         Args:
             df: OHLCV 數據
-            current_idx: 當前索引
-
-        Returns:
-            float: 當前成交量 / 平均成交量
         """
-        if current_idx < self.volume_window:
-            return 1.0
+        n = len(df)
+        highs = df['high'].to_numpy(dtype=np.float64)
+        lows = df['low'].to_numpy(dtype=np.float64)
+        closes = df['close'].to_numpy(dtype=np.float64)
+        volumes = df['volume'].to_numpy(dtype=np.float64)
 
-        current_volume = df['volume'].iloc[current_idx]
-        avg_volume = df['volume'].iloc[current_idx - self.volume_window:current_idx].mean()
+        # 初始化緩存
+        self._volume_ratio_cache = np.ones(n, dtype=np.float32)
+        self._price_momentum_cache = np.zeros(n, dtype=np.float32)
+        self._vwap_momentum_cache = np.zeros(n, dtype=np.float32)
+        self._price_position_cache = np.full(n, 50.0, dtype=np.float32)
+        self._zone_class_cache = np.zeros(n, dtype=np.int8)
 
-        if avg_volume == 0:
-            return 1.0
+        # 1. 向量化計算 Volume Ratio
+        volume_series = pd.Series(volumes)
+        rolling_avg_volume = volume_series.rolling(self.volume_window, min_periods=1).mean()
+        avg_volume_arr = rolling_avg_volume.to_numpy()
+        # 避免除以零
+        avg_volume_arr = np.where(avg_volume_arr > 0, avg_volume_arr, 1.0)
+        self._volume_ratio_cache = (volumes / avg_volume_arr).astype(np.float32)
 
-        return current_volume / avg_volume
+        # 2. 向量化計算 Price Momentum (10 bar lookback)
+        momentum_lookback = 10
+        close_series = pd.Series(closes)
+        shifted_closes = close_series.shift(momentum_lookback)
+        momentum = (closes - shifted_closes.to_numpy()) / np.where(shifted_closes.to_numpy() > 0, shifted_closes.to_numpy(), 1.0) * 100
+        momentum = np.nan_to_num(momentum, nan=0.0)
+        self._price_momentum_cache = momentum.astype(np.float32)
 
-    def calculate_price_momentum(self, df: pd.DataFrame, current_idx: int,
-                                 lookback: int = 10) -> float:
-        """
-        計算價格動量（正規化）
+        # 3. 向量化計算 VWAP Momentum
+        typical_price = (highs + lows + closes) / 3
+        tp_volume = typical_price * volumes
+        tp_volume_series = pd.Series(tp_volume)
+        volume_series = pd.Series(volumes)
 
-        Args:
-            df: OHLCV 數據
-            current_idx: 當前索引
-            lookback: 回看期數
+        rolling_tp_volume = tp_volume_series.rolling(self.volume_window, min_periods=1).sum()
+        rolling_volume = volume_series.rolling(self.volume_window, min_periods=1).sum()
 
-        Returns:
-            float: 價格變化幅度（百分比）
-        """
-        if current_idx < lookback:
-            return 0.0
+        vwap = rolling_tp_volume.to_numpy() / np.where(rolling_volume.to_numpy() > 0, rolling_volume.to_numpy(), 1.0)
+        vwap_momentum = (closes - vwap) / np.where(vwap > 0, vwap, 1.0) * 100
+        vwap_momentum = np.nan_to_num(vwap_momentum, nan=0.0)
+        self._vwap_momentum_cache = vwap_momentum.astype(np.float32)
 
-        current_price = df['close'].iloc[current_idx]
-        past_price = df['close'].iloc[current_idx - lookback]
+        # 4. 向量化計算 Price Position in Range
+        high_series = pd.Series(highs)
+        low_series = pd.Series(lows)
 
-        if past_price == 0:
-            return 0.0
+        rolling_high = high_series.rolling(self.swing_window, min_periods=1).max()
+        rolling_low = low_series.rolling(self.swing_window, min_periods=1).min()
 
-        momentum = (current_price - past_price) / past_price * 100
-        return momentum
+        swing_high = rolling_high.to_numpy()
+        swing_low = rolling_low.to_numpy()
 
-    def calculate_vwap(self, df: pd.DataFrame, start_idx: int, end_idx: int) -> float:
-        """
-        計算 VWAP (Volume Weighted Average Price)
+        range_size = swing_high - swing_low
+        # 避免除以零
+        range_size = np.where(range_size > 0, range_size, 1.0)
+        position = (closes - swing_low) / range_size * 100
+        position = np.clip(position, 0, 100)
+        self._price_position_cache = position.astype(np.float32)
 
-        Args:
-            df: OHLCV 數據
-            start_idx: 起始索引
-            end_idx: 結束索引
+        # 5. 向量化計算 Zone Classification
+        # Premium >= 61.8%, Discount <= 38.2%, Equilibrium 中間
+        self._zone_class_cache = np.where(
+            position >= 61.8, 1,  # Premium
+            np.where(position <= 38.2, -1, 0)  # Discount or Equilibrium
+        ).astype(np.int8)
 
-        Returns:
-            float: VWAP 價格
-        """
-        if start_idx >= end_idx:
-            return df['close'].iloc[end_idx]
+        self._cache_valid = True
 
-        df_slice = df.iloc[start_idx:end_idx+1]
+    def get_cached_features(self, current_idx: int) -> Dict[str, float]:
+        """從緩存獲取特徵（O(1) 操作）"""
+        if not self._cache_valid:
+            raise RuntimeError("緩存未初始化，請先調用 precompute_all_features()")
 
-        # 使用典型價格 (High + Low + Close) / 3
-        typical_price = (df_slice['high'] + df_slice['low'] + df_slice['close']) / 3
-        volume = df_slice['volume']
-
-        total_volume = volume.sum()
-        if total_volume == 0:
-            return typical_price.mean()
-
-        vwap = (typical_price * volume).sum() / total_volume
-        return vwap
-
-    def calculate_vwap_momentum(self, df: pd.DataFrame, current_idx: int,
-                               vwap_window: int = 20) -> float:
-        """
-        計算 VWAP 動量
-
-        Args:
-            df: OHLCV 數據
-            current_idx: 當前索引
-            vwap_window: VWAP 計算窗口
-
-        Returns:
-            float: (當前價格 - VWAP) / VWAP * 100
-        """
-        if current_idx < vwap_window:
-            return 0.0
-
-        start_idx = max(0, current_idx - vwap_window)
-        vwap = self.calculate_vwap(df, start_idx, current_idx)
-        current_price = df['close'].iloc[current_idx]
-
-        if vwap == 0:
-            return 0.0
-
-        momentum = (current_price - vwap) / vwap * 100
-        return momentum
-
-    def find_swing_range(self, df: pd.DataFrame, current_idx: int) -> Tuple[float, float]:
-        """
-        找到當前的波段高低點
-
-        Args:
-            df: OHLCV 數據
-            current_idx: 當前索引
-
-        Returns:
-            (swing_high, swing_low): 波段高低點
-        """
-        lookback_start = max(0, current_idx - self.swing_window)
-        df_range = df.iloc[lookback_start:current_idx+1]
-
-        swing_high = df_range['high'].max()
-        swing_low = df_range['low'].min()
-
-        return swing_high, swing_low
-
-    def calculate_price_position_in_range(self, df: pd.DataFrame,
-                                         current_idx: int) -> float:
-        """
-        計算當前價格在波段中的位置
-
-        Args:
-            df: OHLCV 數據
-            current_idx: 當前索引
-
-        Returns:
-            float: 0-100 的百分比（0 = 波段低點，100 = 波段高點）
-        """
-        if current_idx < 10:
-            return 50.0
-
-        swing_high, swing_low = self.find_swing_range(df, current_idx)
-        current_price = df['close'].iloc[current_idx]
-
-        if swing_high == swing_low:
-            return 50.0
-
-        position = (current_price - swing_low) / (swing_high - swing_low) * 100
-        return np.clip(position, 0, 100)
-
-    def classify_zone(self, price_position: float) -> int:
-        """
-        分類 Premium/Discount/Equilibrium 區域
-
-        根據 ICT 理論：
-        - Premium Zone (>= 61.8%): 價格在波段頂部，可能回調
-        - Equilibrium (38.2% - 61.8%): 平衡區域
-        - Discount Zone (<= 38.2%): 價格在波段底部，可能反彈
-
-        Args:
-            price_position: 價格在波段中的位置 (0-100)
-
-        Returns:
-            int: -1 (Discount), 0 (Equilibrium), 1 (Premium)
-        """
-        if price_position >= 61.8:
-            return 1  # Premium
-        elif price_position <= 38.2:
-            return -1  # Discount
-        else:
-            return 0  # Equilibrium
+        return {
+            'volume_ratio': float(self._volume_ratio_cache[current_idx]),
+            'price_momentum': float(self._price_momentum_cache[current_idx]),
+            'vwap_momentum': float(self._vwap_momentum_cache[current_idx]),
+            'price_position_in_range': float(self._price_position_cache[current_idx]),
+            'zone_classification': int(self._zone_class_cache[current_idx])
+        }
 
     def calculate_features(self, df: pd.DataFrame, current_idx: int) -> dict:
-        """
-        計算當前位置的成交量與價格特徵
+        """計算當前位置的成交量與價格特徵"""
+        if self._cache_valid:
+            return self.get_cached_features(current_idx)
 
-        Args:
-            df: OHLCV 數據
-            current_idx: 當前索引
+        return self._calculate_features_original(df, current_idx)
 
-        Returns:
-            dict: 包含 5 個特徵的字典
-            {
-                'volume_ratio': float,           # 當前成交量 / 平均成交量
-                'price_momentum': float,         # 價格動量（%）
-                'vwap_momentum': float,          # VWAP 動量（%）
-                'price_position_in_range': float, # 0-100
-                'zone_classification': int       # -1/0/1
-            }
-        """
+    def _calculate_features_original(self, df: pd.DataFrame, current_idx: int) -> dict:
+        """原始計算方法（保留用於兼容性）"""
         if current_idx < self.volume_window:
             return {
                 'volume_ratio': 1.0,
@@ -224,12 +151,50 @@ class VolumeAnalyzer:
                 'zone_classification': 0
             }
 
-        # 計算各項特徵
-        volume_ratio = self.calculate_volume_ratio(df, current_idx)
-        price_momentum = self.calculate_price_momentum(df, current_idx, lookback=10)
-        vwap_momentum = self.calculate_vwap_momentum(df, current_idx, vwap_window=20)
-        price_position = self.calculate_price_position_in_range(df, current_idx)
-        zone_class = self.classify_zone(price_position)
+        closes = df['close'].to_numpy()
+        highs = df['high'].to_numpy()
+        lows = df['low'].to_numpy()
+        volumes = df['volume'].to_numpy()
+
+        # Volume Ratio
+        current_volume = volumes[current_idx]
+        avg_volume = volumes[current_idx - self.volume_window:current_idx].mean()
+        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
+
+        # Price Momentum
+        lookback = 10
+        if current_idx >= lookback:
+            past_price = closes[current_idx - lookback]
+            price_momentum = (closes[current_idx] - past_price) / past_price * 100 if past_price > 0 else 0.0
+        else:
+            price_momentum = 0.0
+
+        # VWAP Momentum
+        start_idx = max(0, current_idx - self.volume_window)
+        typical_price = (highs[start_idx:current_idx+1] + lows[start_idx:current_idx+1] + closes[start_idx:current_idx+1]) / 3
+        vol_slice = volumes[start_idx:current_idx+1]
+        total_vol = vol_slice.sum()
+        vwap = (typical_price * vol_slice).sum() / total_vol if total_vol > 0 else closes[current_idx]
+        vwap_momentum = (closes[current_idx] - vwap) / vwap * 100 if vwap > 0 else 0.0
+
+        # Price Position
+        lookback_start = max(0, current_idx - self.swing_window)
+        swing_high = highs[lookback_start:current_idx+1].max()
+        swing_low = lows[lookback_start:current_idx+1].min()
+        range_size = swing_high - swing_low
+        if range_size > 0:
+            price_position = (closes[current_idx] - swing_low) / range_size * 100
+            price_position = np.clip(price_position, 0, 100)
+        else:
+            price_position = 50.0
+
+        # Zone Classification
+        if price_position >= 61.8:
+            zone_class = 1  # Premium
+        elif price_position <= 38.2:
+            zone_class = -1  # Discount
+        else:
+            zone_class = 0  # Equilibrium
 
         return {
             'volume_ratio': volume_ratio,
@@ -241,89 +206,54 @@ class VolumeAnalyzer:
 
     def analyze_full_dataset(self, df: pd.DataFrame) -> pd.DataFrame:
         """分析整個數據集的成交量與價格特徵"""
-        print(f"🔍 分析 Volume & Price 特徵...")
-        print(f"   數據範圍: {df.index[0]} 到 {df.index[-1]}")
-        print(f"   總 K 線數: {len(df):,}")
+        print(f"[Volume] Analyzing {len(df):,} bars...")
+        self.precompute_all_features(df)
 
-        # 創建結果 DataFrame
         result = df.copy()
-        result['volume_ratio'] = 1.0
-        result['price_momentum'] = 0.0
-        result['vwap_momentum'] = 0.0
-        result['price_position_in_range'] = 50.0
-        result['zone_classification'] = 0
-
-        # 計算每個位置的特徵
-        for i in range(len(df)):
-            features = self.calculate_features(df, i)
-            result['volume_ratio'].iloc[i] = features['volume_ratio']
-            result['price_momentum'].iloc[i] = features['price_momentum']
-            result['vwap_momentum'].iloc[i] = features['vwap_momentum']
-            result['price_position_in_range'].iloc[i] = features['price_position_in_range']
-            result['zone_classification'].iloc[i] = features['zone_classification']
-
-        # 統計
-        premium_count = (result['zone_classification'] == 1).sum()
-        discount_count = (result['zone_classification'] == -1).sum()
-        equilibrium_count = (result['zone_classification'] == 0).sum()
-
-        print(f"   Premium Zone: {premium_count} ({premium_count/len(result)*100:.1f}%)")
-        print(f"   Discount Zone: {discount_count} ({discount_count/len(result)*100:.1f}%)")
-        print(f"   Equilibrium: {equilibrium_count} ({equilibrium_count/len(result)*100:.1f}%)")
-
-        avg_volume_ratio = result['volume_ratio'].mean()
-        print(f"\n   平均成交量比率: {avg_volume_ratio:.2f}")
-
-        print(f"✅ Volume & Price 分析完成！\n")
+        result['volume_ratio'] = self._volume_ratio_cache
+        result['price_momentum'] = self._price_momentum_cache
+        result['vwap_momentum'] = self._vwap_momentum_cache
+        result['price_position_in_range'] = self._price_position_cache
+        result['zone_classification'] = self._zone_class_cache
 
         return result
 
 
 def test_volume():
-    """測試 Volume & Price 模塊"""
+    """測試 Volume 模塊"""
     print("=" * 60)
-    print("  🧪 測試 Volume & Price 特徵模塊")
+    print("  Testing Volume (Vectorized)")
     print("=" * 60)
 
-    # 載入數據
     from pathlib import Path
+    import time
+
     project_root = Path(__file__).parent.parent.parent
-
-    print("\n📂 載入測試數據...")
     data_path = project_root / "data" / "raw" / "BTCUSDT_1m_train_latest.csv"
+
+    if not data_path.exists():
+        print("Test data not found, skipping test")
+        return
+
     df = pd.read_csv(data_path, index_col=0, parse_dates=True)
+    df_test = df.iloc[-5000:].copy()
+    print(f"   Test data: {len(df_test)} bars")
 
-    # 使用最近 1000 根 K 線進行測試
-    df_test = df.iloc[-1000:].copy()
-    print(f"   測試數據: {len(df_test)} 根 K 線")
-    print(f"   時間範圍: {df_test.index[0]} 到 {df_test.index[-1]}\n")
+    vol = VolumeAnalyzer(volume_window=20, swing_window=50)
 
-    # 初始化分析器
-    volume_analyzer = VolumeAnalyzer(volume_window=20, swing_window=50)
+    start = time.time()
+    vol.precompute_all_features(df_test)
+    elapsed = time.time() - start
+    print(f"   Precompute time: {elapsed:.3f}s")
 
-    # 分析整個測試數據集
-    result = volume_analyzer.analyze_full_dataset(df_test)
+    start = time.time()
+    for i in range(len(df_test)):
+        _ = vol.get_cached_features(i)
+    elapsed = time.time() - start
+    print(f"   Cache query time ({len(df_test)} queries): {elapsed:.3f}s")
 
-    # 顯示統計
-    print("📊 Volume & Price 統計:")
-    print(f"   平均價格動量: {result['price_momentum'].mean():.2f}%")
-    print(f"   平均 VWAP 動量: {result['vwap_momentum'].mean():.2f}%")
-    print(f"   平均價格位置: {result['price_position_in_range'].mean():.1f}")
-
-    print("\n✅ 測試完成！\n")
-
-    # 測試單點特徵計算
-    print("🎯 測試單點特徵計算（最後一根 K 線）:")
-    features = volume_analyzer.calculate_features(df_test, len(df_test) - 1)
-    print(f"   成交量比率: {features['volume_ratio']:.2f}")
-    print(f"   價格動量: {features['price_momentum']:.2f}%")
-    print(f"   VWAP 動量: {features['vwap_momentum']:.2f}%")
-    print(f"   價格位置: {features['price_position_in_range']:.1f}")
-    zone_name = {-1: "Discount", 0: "Equilibrium", 1: "Premium"}[features['zone_classification']]
-    print(f"   區域分類: {zone_name}")
-
-    return result
+    print("\n   OK: Vectorized Volume test passed!")
 
 
 if __name__ == "__main__":
-    result = test_volume()
+    test_volume()

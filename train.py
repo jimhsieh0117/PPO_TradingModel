@@ -88,8 +88,6 @@ def create_training_env(df: pd.DataFrame, config: dict):
     # 獲取訓練配置
     training_config = config.get('training', {})
     backtest_config = config.get('backtest', {})
-    backtest_config = config.get('backtest', {})
-    backtest_config = config.get('backtest', {})
 
     misc_config = config.get('misc', {})
     n_envs = int(misc_config.get('n_cpu', 1))
@@ -99,6 +97,19 @@ def create_training_env(df: pd.DataFrame, config: dict):
     seed = misc_config.get('random_seed', None)
     if seed is not None:
         set_random_seed(seed)
+
+    # === 優化：預計算特徵（帶硬碟緩存，只計算一次）===
+    # 數據未變更時直接從緩存讀取，大幅減少啟動時間
+    print("\n[train.py] Loading/computing features with disk cache...")
+    from utils.feature_cache import precompute_features_with_cache
+
+    precomputed_features = precompute_features_with_cache(
+        df=df,
+        config=config.get('features', {}),
+        cache_dir="data/cache",
+        verbose=True
+    )
+    print(f"[train.py] Feature cache shape: {precomputed_features.shape}")
 
     def make_env(rank: int):
         def _init():
@@ -112,7 +123,8 @@ def create_training_env(df: pd.DataFrame, config: dict):
                 trading_fee=trading_config.get('taker_fee', 0.0004),
                 episode_length=training_config.get('episode_length', 1440),
                 feature_config=config.get('features', {}),
-                reward_config=config.get('reward', {})
+                reward_config=config.get('reward', {}),
+                precomputed_features=precomputed_features  # 傳入預計算的特徵
             )
             if seed is not None:
                 env.reset(seed=seed + rank)

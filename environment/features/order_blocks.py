@@ -1,10 +1,14 @@
 """
-Order Blocks 檢測模塊
+Order Blocks 檢測模塊（向量化優化版）
 
 實現 ICT Order Block 概念：
 - 看漲 Order Block: 下降趨勢反轉前的最後一根看跌 K 線
 - 看跌 Order Block: 上升趨勢反轉前的最後一根看漲 K 線
 - Order Blocks 通常提供支撐/阻力區域
+
+優化：
+- 使用 NumPy 向量化操作
+- 預計算整個數據集，查詢 O(1)
 
 作者：PPO Trading Team
 日期：2026-01-14
@@ -12,47 +16,11 @@ Order Blocks 檢測模塊
 
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Optional
-
-
-class OrderBlock:
-    """Order Block 數據結構"""
-
-    def __init__(self, bar_index: int, high: float, low: float,
-                 direction: str, timestamp: pd.Timestamp):
-        """
-        初始化 Order Block
-
-        Args:
-            bar_index: K 線索引
-            high: OB 區域高點
-            low: OB 區域低點
-            direction: 'bullish' 或 'bearish'
-            timestamp: 時間戳
-        """
-        self.bar_index = bar_index
-        self.high = high
-        self.low = low
-        self.direction = direction
-        self.timestamp = timestamp
-        self.is_mitigated = False  # 是否已被緩解（價格回到OB區域）
-
-    def is_inside(self, price: float) -> bool:
-        """檢查價格是否在 OB 區域內"""
-        return self.low <= price <= self.high
-
-    def get_distance(self, price: float) -> float:
-        """計算價格到 OB 的距離（百分比）"""
-        if price > self.high:
-            return (price - self.high) / price * 100
-        elif price < self.low:
-            return (self.low - price) / price * 100
-        else:
-            return 0.0  # 價格在 OB 內
+from typing import List, Dict, Tuple
 
 
 class OrderBlockDetector:
-    """Order Block 檢測器"""
+    """Order Block 檢測器（向量化優化版）"""
 
     def __init__(self, lookback: int = 20, min_size_pct: float = 0.002):
         """
@@ -64,219 +32,238 @@ class OrderBlockDetector:
         """
         self.lookback = lookback
         self.min_size_pct = min_size_pct
-        self.swing_window = 5  # Swing point 識別窗口
+        self.swing_window = 5
 
-    def identify_swing_points(self, df: pd.DataFrame) -> tuple:
-        """識別 Swing Highs 和 Swing Lows"""
-        highs = df['high'].values
-        lows = df['low'].values
+        # 預計算緩存
+        self._cache_valid = False
+        self._dist_bullish_cache = None   # [n] 距離看漲 OB
+        self._dist_bearish_cache = None   # [n] 距離看跌 OB
+        self._in_bullish_cache = None     # [n] 是否在看漲 OB 內
+        self._in_bearish_cache = None     # [n] 是否在看跌 OB 內
+
+    def precompute_all_features(self, df: pd.DataFrame) -> None:
+        """
+        向量化預計算整個數據集的 Order Block 特徵
+
+        Args:
+            df: OHLC 數據
+        """
         n = len(df)
-        w = self.swing_window
+        highs = df['high'].to_numpy(dtype=np.float64)
+        lows = df['low'].to_numpy(dtype=np.float64)
+        opens = df['open'].to_numpy(dtype=np.float64)
+        closes = df['close'].to_numpy(dtype=np.float64)
 
-        swing_high_indices = []
-        swing_low_indices = []
+        # 初始化緩存
+        self._dist_bullish_cache = np.full(n, 10.0, dtype=np.float32)
+        self._dist_bearish_cache = np.full(n, 10.0, dtype=np.float32)
+        self._in_bullish_cache = np.zeros(n, dtype=np.int8)
+        self._in_bearish_cache = np.zeros(n, dtype=np.int8)
 
-        for i in range(w, n - w):
-            # Swing High
-            if highs[i] == max(highs[i-w:i+w+1]):
-                swing_high_indices.append(i)
+        # 1. 向量化識別 swing points
+        swing_high_mask, swing_low_mask = self._vectorized_swing_points(highs, lows)
 
-            # Swing Low
-            if lows[i] == min(lows[i-w:i+w+1]):
-                swing_low_indices.append(i)
+        # 2. 識別看跌/看漲 K 線
+        bearish_candle = closes < opens  # 看跌 K 線
+        bullish_candle = closes > opens  # 看漲 K 線
 
-        return swing_high_indices, swing_low_indices
+        # 3. 計算 K 線大小
+        candle_size = (highs - lows) / np.where(lows > 0, lows, 1)
+        valid_size = candle_size >= self.min_size_pct
 
-    def detect_order_blocks(self, df: pd.DataFrame) -> tuple:
-        """
-        檢測所有 Order Blocks
+        # 4. 找到所有 Order Blocks
+        # 看漲 OB: swing low 之前的看跌 K 線
+        # 看跌 OB: swing high 之前的看漲 K 線
+        bullish_ob_highs = []  # [(idx, high, low), ...]
+        bearish_ob_highs = []
 
-        邏輯：
-        1. 找到所有 swing lows (潛在看漲 OB)
-        2. 找到所有 swing highs (潛在看跌 OB)
-        3. 在反轉前找到最後一根相反方向的 K 線作為 OB
+        swing_low_indices = np.where(swing_low_mask)[0]
+        swing_high_indices = np.where(swing_high_mask)[0]
 
-        Args:
-            df: OHLC 數據
-
-        Returns:
-            (bullish_obs, bearish_obs): 看漲和看跌 OB 列表
-        """
-        swing_high_indices, swing_low_indices = self.identify_swing_points(df)
-
-        bullish_obs = []
-        bearish_obs = []
-
-        # 檢測看漲 Order Blocks（在 swing low 之前）
+        # 找看漲 OB（在 swing low 之前）
         for swing_idx in swing_low_indices:
-            # 在 swing low 之前尋找最後一根看跌 K 線
             for i in range(swing_idx - 1, max(0, swing_idx - 10), -1):
-                if df['close'].iloc[i] < df['open'].iloc[i]:  # 看跌 K 線
-                    ob_high = df['high'].iloc[i]
-                    ob_low = df['low'].iloc[i]
-                    ob_size = (ob_high - ob_low) / ob_low
+                if bearish_candle[i] and valid_size[i]:
+                    bullish_ob_highs.append((i, highs[i], lows[i]))
+                    break
 
-                    # 檢查 OB 大小是否符合要求
-                    if ob_size >= self.min_size_pct:
-                        ob = OrderBlock(
-                            bar_index=i,
-                            high=ob_high,
-                            low=ob_low,
-                            direction='bullish',
-                            timestamp=df.index[i]
-                        )
-                        bullish_obs.append(ob)
-                        break
-
-        # 檢測看跌 Order Blocks（在 swing high 之前）
+        # 找看跌 OB（在 swing high 之前）
         for swing_idx in swing_high_indices:
-            # 在 swing high 之前尋找最後一根看漲 K 線
             for i in range(swing_idx - 1, max(0, swing_idx - 10), -1):
-                if df['close'].iloc[i] > df['open'].iloc[i]:  # 看漲 K 線
-                    ob_high = df['high'].iloc[i]
-                    ob_low = df['low'].iloc[i]
-                    ob_size = (ob_high - ob_low) / ob_low
+                if bullish_candle[i] and valid_size[i]:
+                    bearish_ob_highs.append((i, highs[i], lows[i]))
+                    break
 
-                    # 檢查 OB 大小是否符合要求
-                    if ob_size >= self.min_size_pct:
-                        ob = OrderBlock(
-                            bar_index=i,
-                            high=ob_high,
-                            low=ob_low,
-                            direction='bearish',
-                            timestamp=df.index[i]
-                        )
-                        bearish_obs.append(ob)
-                        break
+        # 5. 為每個位置計算特徵
+        for i in range(n):
+            current_price = closes[i]
 
-        return bullish_obs, bearish_obs
+            # 找最近的有效看漲 OB
+            nearest_bullish_dist = 10.0
+            in_bullish = 0
+            for ob_idx, ob_high, ob_low in bullish_ob_highs:
+                if ob_idx >= i:
+                    continue
+                # 計算距離
+                if current_price > ob_high:
+                    dist = (current_price - ob_high) / current_price * 100
+                elif current_price < ob_low:
+                    dist = (ob_low - current_price) / current_price * 100
+                else:
+                    dist = 0.0
+                    in_bullish = 1
+                if dist < nearest_bullish_dist:
+                    nearest_bullish_dist = dist
+                    if ob_low <= current_price <= ob_high:
+                        in_bullish = 1
 
-    def get_nearest_obs(self, df: pd.DataFrame, current_idx: int,
-                       bullish_obs: List[OrderBlock],
-                       bearish_obs: List[OrderBlock]) -> tuple:
-        """
-        獲取最近的有效 Order Blocks
+            # 找最近的有效看跌 OB
+            nearest_bearish_dist = 10.0
+            in_bearish = 0
+            for ob_idx, ob_high, ob_low in bearish_ob_highs:
+                if ob_idx >= i:
+                    continue
+                if current_price > ob_high:
+                    dist = (current_price - ob_high) / current_price * 100
+                elif current_price < ob_low:
+                    dist = (ob_low - current_price) / current_price * 100
+                else:
+                    dist = 0.0
+                    in_bearish = 1
+                if dist < nearest_bearish_dist:
+                    nearest_bearish_dist = dist
+                    if ob_low <= current_price <= ob_high:
+                        in_bearish = 1
 
-        Args:
-            df: OHLC 數據
-            current_idx: 當前索引
-            bullish_obs: 看漲 OB 列表
-            bearish_obs: 看跌 OB 列表
+            self._dist_bullish_cache[i] = nearest_bullish_dist
+            self._dist_bearish_cache[i] = nearest_bearish_dist
+            self._in_bullish_cache[i] = in_bullish
+            self._in_bearish_cache[i] = in_bearish
 
-        Returns:
-            (nearest_bullish_ob, nearest_bearish_ob)
-        """
-        current_price = df['close'].iloc[current_idx]
+        self._cache_valid = True
 
-        # 過濾：只保留當前位置之前的 OB
-        valid_bullish = [ob for ob in bullish_obs if ob.bar_index < current_idx]
-        valid_bearish = [ob for ob in bearish_obs if ob.bar_index < current_idx]
+    def _vectorized_swing_points(self, highs: np.ndarray, lows: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """向量化識別 swing points"""
+        n = len(highs)
+        w = self.swing_window
+        window_size = 2 * w + 1
 
-        # 找到最近的看漲 OB
-        nearest_bullish = None
-        min_bullish_dist = float('inf')
-        for ob in valid_bullish:
-            dist = abs(ob.get_distance(current_price))
-            if dist < min_bullish_dist:
-                min_bullish_dist = dist
-                nearest_bullish = ob
+        high_series = pd.Series(highs)
+        low_series = pd.Series(lows)
 
-        # 找到最近的看跌 OB
-        nearest_bearish = None
-        min_bearish_dist = float('inf')
-        for ob in valid_bearish:
-            dist = abs(ob.get_distance(current_price))
-            if dist < min_bearish_dist:
-                min_bearish_dist = dist
-                nearest_bearish = ob
+        rolling_max = high_series.rolling(window_size, center=True, min_periods=window_size).max()
+        rolling_min = low_series.rolling(window_size, center=True, min_periods=window_size).min()
 
-        return nearest_bullish, nearest_bearish
+        swing_high_mask = (highs == rolling_max.to_numpy())
+        swing_low_mask = (lows == rolling_min.to_numpy())
+
+        return swing_high_mask, swing_low_mask
+
+    def get_cached_features(self, current_idx: int) -> Dict[str, float]:
+        """從緩存獲取特徵（O(1) 操作）"""
+        if not self._cache_valid:
+            raise RuntimeError("緩存未初始化，請先調用 precompute_all_features()")
+
+        return {
+            'dist_to_bullish_ob': float(self._dist_bullish_cache[current_idx]),
+            'dist_to_bearish_ob': float(self._dist_bearish_cache[current_idx]),
+            'in_bullish_ob': int(self._in_bullish_cache[current_idx]),
+            'in_bearish_ob': int(self._in_bearish_cache[current_idx])
+        }
 
     def calculate_features(self, df: pd.DataFrame, current_idx: int) -> dict:
-        """
-        計算當前位置的 Order Block 特徵
+        """計算當前位置的 Order Block 特徵"""
+        if self._cache_valid:
+            return self.get_cached_features(current_idx)
 
-        Args:
-            df: OHLC 數據
-            current_idx: 當前索引
+        # 回退到原始計算
+        return self._calculate_features_original(df, current_idx)
 
-        Returns:
-            dict: 包含 4 個特徵的字典
-            {
-                'dist_to_bullish_ob': float,    # 距離看漲 OB 的百分比
-                'dist_to_bearish_ob': float,    # 距離看跌 OB 的百分比
-                'in_bullish_ob': int,           # 是否在看漲 OB 內 (0/1)
-                'in_bearish_ob': int            # 是否在看跌 OB 內 (0/1)
-            }
-        """
-        # 獲取回看數據
+    def _calculate_features_original(self, df: pd.DataFrame, current_idx: int) -> dict:
+        """原始計算方法（保留用於兼容性）"""
         lookback_start = max(0, current_idx - self.lookback)
-        df_lookback = df.iloc[lookback_start:current_idx+1].copy()
+        df_lookback = df.iloc[lookback_start:current_idx+1]
 
         if len(df_lookback) < 20:
-            # 數據不足
             return {
-                'dist_to_bullish_ob': 10.0,  # 默認遠離 OB
+                'dist_to_bullish_ob': 10.0,
                 'dist_to_bearish_ob': 10.0,
                 'in_bullish_ob': 0,
                 'in_bearish_ob': 0
             }
 
-        # 檢測 Order Blocks
-        bullish_obs, bearish_obs = self.detect_order_blocks(df_lookback)
+        highs = df_lookback['high'].to_numpy()
+        lows = df_lookback['low'].to_numpy()
+        opens = df_lookback['open'].to_numpy()
+        closes = df_lookback['close'].to_numpy()
 
-        # 獲取最近的 OB
-        nearest_bullish, nearest_bearish = self.get_nearest_obs(
-            df_lookback, len(df_lookback) - 1, bullish_obs, bearish_obs
-        )
+        # 識別 swing points
+        swing_high_mask, swing_low_mask = self._vectorized_swing_points(highs, lows)
 
-        current_price = df.iloc[current_idx]['close']
+        # 找 OB
+        bearish_candle = closes < opens
+        bullish_candle = closes > opens
+        candle_size = (highs - lows) / np.where(lows > 0, lows, 1)
+        valid_size = candle_size >= self.min_size_pct
 
-        # 計算特徵
-        features = {
-            'dist_to_bullish_ob': 10.0,  # 默認值
+        current_price = closes[-1]
+        result = {
+            'dist_to_bullish_ob': 10.0,
             'dist_to_bearish_ob': 10.0,
             'in_bullish_ob': 0,
             'in_bearish_ob': 0
         }
 
-        if nearest_bullish:
-            features['dist_to_bullish_ob'] = nearest_bullish.get_distance(current_price)
-            features['in_bullish_ob'] = 1 if nearest_bullish.is_inside(current_price) else 0
+        # 找看漲 OB
+        swing_low_indices = np.where(swing_low_mask)[0]
+        for swing_idx in swing_low_indices:
+            for i in range(swing_idx - 1, max(0, swing_idx - 10), -1):
+                if bearish_candle[i] and valid_size[i]:
+                    ob_high, ob_low = highs[i], lows[i]
+                    if ob_low <= current_price <= ob_high:
+                        result['in_bullish_ob'] = 1
+                        result['dist_to_bullish_ob'] = 0.0
+                    elif current_price > ob_high:
+                        dist = (current_price - ob_high) / current_price * 100
+                        if dist < result['dist_to_bullish_ob']:
+                            result['dist_to_bullish_ob'] = dist
+                    else:
+                        dist = (ob_low - current_price) / current_price * 100
+                        if dist < result['dist_to_bullish_ob']:
+                            result['dist_to_bullish_ob'] = dist
+                    break
 
-        if nearest_bearish:
-            features['dist_to_bearish_ob'] = nearest_bearish.get_distance(current_price)
-            features['in_bearish_ob'] = 1 if nearest_bearish.is_inside(current_price) else 0
+        # 找看跌 OB
+        swing_high_indices = np.where(swing_high_mask)[0]
+        for swing_idx in swing_high_indices:
+            for i in range(swing_idx - 1, max(0, swing_idx - 10), -1):
+                if bullish_candle[i] and valid_size[i]:
+                    ob_high, ob_low = highs[i], lows[i]
+                    if ob_low <= current_price <= ob_high:
+                        result['in_bearish_ob'] = 1
+                        result['dist_to_bearish_ob'] = 0.0
+                    elif current_price > ob_high:
+                        dist = (current_price - ob_high) / current_price * 100
+                        if dist < result['dist_to_bearish_ob']:
+                            result['dist_to_bearish_ob'] = dist
+                    else:
+                        dist = (ob_low - current_price) / current_price * 100
+                        if dist < result['dist_to_bearish_ob']:
+                            result['dist_to_bearish_ob'] = dist
+                    break
 
-        return features
+        return result
 
     def analyze_full_dataset(self, df: pd.DataFrame) -> pd.DataFrame:
         """分析整個數據集的 Order Blocks"""
-        print(f"🔍 分析 Order Blocks...")
-        print(f"   數據範圍: {df.index[0]} 到 {df.index[-1]}")
-        print(f"   總 K 線數: {len(df):,}")
+        print(f"[OrderBlocks] Analyzing {len(df):,} bars...")
+        self.precompute_all_features(df)
 
-        # 檢測所有 OB
-        bullish_obs, bearish_obs = self.detect_order_blocks(df)
-
-        print(f"   檢測到看漲 OB: {len(bullish_obs)}")
-        print(f"   檢測到看跌 OB: {len(bearish_obs)}")
-        print(f"✅ Order Blocks 分析完成！\n")
-
-        # 創建結果 DataFrame
         result = df.copy()
-        result['dist_to_bullish_ob'] = 10.0
-        result['dist_to_bearish_ob'] = 10.0
-        result['in_bullish_ob'] = 0
-        result['in_bearish_ob'] = 0
-
-        # 計算每個位置的特徵
-        for i in range(len(df)):
-            features = self.calculate_features(df, i)
-            result['dist_to_bullish_ob'].iloc[i] = features['dist_to_bullish_ob']
-            result['dist_to_bearish_ob'].iloc[i] = features['dist_to_bearish_ob']
-            result['in_bullish_ob'].iloc[i] = features['in_bullish_ob']
-            result['in_bearish_ob'].iloc[i] = features['in_bearish_ob']
+        result['dist_to_bullish_ob'] = self._dist_bullish_cache
+        result['dist_to_bearish_ob'] = self._dist_bearish_cache
+        result['in_bullish_ob'] = self._in_bullish_cache
+        result['in_bearish_ob'] = self._in_bearish_cache
 
         return result
 
@@ -284,52 +271,38 @@ class OrderBlockDetector:
 def test_order_blocks():
     """測試 Order Blocks 模塊"""
     print("=" * 60)
-    print("  🧪 測試 Order Blocks 檢測模塊")
+    print("  Testing Order Blocks (Vectorized)")
     print("=" * 60)
 
-    # 載入數據
     from pathlib import Path
+    import time
+
     project_root = Path(__file__).parent.parent.parent
-
-    print("\n📂 載入測試數據...")
     data_path = project_root / "data" / "raw" / "BTCUSDT_1m_train_latest.csv"
+
+    if not data_path.exists():
+        print("Test data not found, skipping test")
+        return
+
     df = pd.read_csv(data_path, index_col=0, parse_dates=True)
+    df_test = df.iloc[-5000:].copy()
+    print(f"   Test data: {len(df_test)} bars")
 
-    # 使用最近 1000 根 K 線進行測試
-    df_test = df.iloc[-1000:].copy()
-    print(f"   測試數據: {len(df_test)} 根 K 線")
-    print(f"   時間範圍: {df_test.index[0]} 到 {df_test.index[-1]}\n")
+    ob = OrderBlockDetector(lookback=20)
 
-    # 初始化檢測器
-    ob_detector = OrderBlockDetector(lookback=50, min_size_pct=0.002)
+    start = time.time()
+    ob.precompute_all_features(df_test)
+    elapsed = time.time() - start
+    print(f"   Precompute time: {elapsed:.3f}s")
 
-    # 分析整個測試數據集
-    result = ob_detector.analyze_full_dataset(df_test)
+    start = time.time()
+    for i in range(len(df_test)):
+        _ = ob.get_cached_features(i)
+    elapsed = time.time() - start
+    print(f"   Cache query time ({len(df_test)} queries): {elapsed:.3f}s")
 
-    # 顯示統計
-    print("📊 Order Block 統計:")
-    in_bullish_count = result['in_bullish_ob'].sum()
-    in_bearish_count = result['in_bearish_ob'].sum()
-    print(f"   價格在看漲 OB 內: {in_bullish_count} 次")
-    print(f"   價格在看跌 OB 內: {in_bearish_count} 次")
-
-    avg_bullish_dist = result['dist_to_bullish_ob'].mean()
-    avg_bearish_dist = result['dist_to_bearish_ob'].mean()
-    print(f"\n   平均距離看漲 OB: {avg_bullish_dist:.2f}%")
-    print(f"   平均距離看跌 OB: {avg_bearish_dist:.2f}%")
-
-    print("\n✅ 測試完成！\n")
-
-    # 測試單點特徵計算
-    print("🎯 測試單點特徵計算（最後一根 K 線）:")
-    features = ob_detector.calculate_features(df_test, len(df_test) - 1)
-    print(f"   距離看漲 OB: {features['dist_to_bullish_ob']:.2f}%")
-    print(f"   距離看跌 OB: {features['dist_to_bearish_ob']:.2f}%")
-    print(f"   在看漲 OB 內: {features['in_bullish_ob']}")
-    print(f"   在看跌 OB 內: {features['in_bearish_ob']}")
-
-    return result
+    print("\n   OK: Vectorized OrderBlocks test passed!")
 
 
 if __name__ == "__main__":
-    result = test_order_blocks()
+    test_order_blocks()

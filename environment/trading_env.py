@@ -56,7 +56,8 @@ class TradingEnv(gym.Env):
         trading_fee: float = 0.0004,
         episode_length: int = 1440,
         feature_config: Optional[Dict] = None,
-        reward_config: Optional[Dict] = None
+        reward_config: Optional[Dict] = None,
+        precomputed_features: Optional[np.ndarray] = None
     ):
         """
         初始化交易環境
@@ -101,6 +102,22 @@ class TradingEnv(gym.Env):
         self.feature_aggregator = FeatureAggregator(
             config=feature_config
         )
+
+        # === 優化：預提取價格數據為 NumPy 數組（避免 DataFrame 訪問開銷）===
+        self._close_prices = self.df['close'].to_numpy(dtype=np.float64)
+        self._high_prices = self.df['high'].to_numpy(dtype=np.float64)
+        self._low_prices = self.df['low'].to_numpy(dtype=np.float64)
+        self._open_prices = self.df['open'].to_numpy(dtype=np.float64)
+
+        # === 優化：預計算所有特徵 ===
+        if precomputed_features is not None:
+            # 使用外部傳入的預計算特徵（避免多環境重複計算）
+            self.feature_aggregator._feature_cache = precomputed_features
+            self.feature_aggregator._cache_valid = True
+        else:
+            # 單環境模式：自行預計算
+            print("[TradingEnv] Precomputing features...")
+            self.feature_aggregator.precompute_all_features(self.df, verbose=True)
 
         # === 獎勵參數 ===
         self.reward_config = reward_config or {}
@@ -294,8 +311,8 @@ class TradingEnv(gym.Env):
             truncated: 是否截斷（episode 結束）
             info: 額外信息
         """
-        # 獲取當前價格（使用 iloc 因為 current_step 是整數索引）
-        current_price = self.df.iloc[self.current_step]['close']
+        # 獲取當前價格（使用 NumPy 數組，O(1) 操作）
+        current_price = self._close_prices[self.current_step]
         self.realized_this_step = False
         self.last_realized_pnl = 0.0
 
@@ -611,12 +628,12 @@ class TradingEnv(gym.Env):
 
         # === 3.3 【v3 新增】持有獲利倉位獎勵 + 持有虧損懲罰 ===
         if self.position != 0 and self.entry_price > 0:
-            # 計算當前浮盈/浮虧百分比
-            current_price = self.df.iloc[self.current_step]['close']
+            # 計算當前浮盈/浮虧百分比（使用 NumPy 數組，O(1) 操作）
+            current_price_for_pnl = self._close_prices[self.current_step]
             if self.position == 1:  # 做多
-                unrealized_pnl_pct = (current_price - self.entry_price) / self.entry_price
+                unrealized_pnl_pct = (current_price_for_pnl - self.entry_price) / self.entry_price
             else:  # 做空
-                unrealized_pnl_pct = (self.entry_price - current_price) / self.entry_price
+                unrealized_pnl_pct = (self.entry_price - current_price_for_pnl) / self.entry_price
 
             # 持有獲利倉位獎勵（鼓勵持倉）
             if unrealized_pnl_pct > 0:
