@@ -44,7 +44,7 @@ ppo:
   n_steps: 2048                   # 更新頻率（每 2048 steps 更新一次）- GPU 4096 CPU 2048
   batch_size: 64                 # 批次大小（GPU 優化）
 
-  n_epochs: 5                     # 每次更新訓練的輪數（v5: 10 → 5 減少過擬合）
+  n_epochs: 10                     # 每次更新訓練的輪數（v5: 10 → 5 減少過擬合）
 
   # 折扣與優勢估計
   gamma: 0.95                     # 折扣因子
@@ -68,7 +68,7 @@ ppo:
 # ==================== 訓練設定 ====================
 training:
   # Episode 設定
-  episode_length: 1440            # Episode 長度（1440 steps = 24 小時）
+  episode_length: 480            # Episode 長度（1440 steps = 24 小時）
   total_timesteps: 130000        # 總訓練步數
 
   # 日誌與保存
