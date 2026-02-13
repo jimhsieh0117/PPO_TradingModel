@@ -58,10 +58,10 @@ def load_training_data(config: dict) -> pd.DataFrame:
     # 使用最新的文件
     data_path = str(sorted(data_files)[-1])
 
-    print(f"📂 載入訓練數據: {data_path}")
+    print(f"[DIR] 載入訓練數據: {data_path}")
     df = pd.read_csv(data_path)
 
-    print(f"   ✅ 數據載入成功")
+    print(f"   [OK] 數據載入成功")
     print(f"   - 總 K 線數: {len(df):,}")
     print(f"   - 時間範圍: {df['timestamp'].iloc[0]} 到 {df['timestamp'].iloc[-1]}")
     print(f"   - 列名: {df.columns.tolist()}")
@@ -136,7 +136,7 @@ def create_training_env(df: pd.DataFrame, config: dict):
     else:
         env = SubprocVecEnv([make_env(i) for i in range(n_envs)])
 
-    print("   ✅ 環境創建成功")
+    print("   [OK] 環境創建成功")
     print(f"   - 初始資金: ${backtest_config.get('initial_capital', 10000):,.2f}")
     print(f"   - 槓桿倍數: {trading_config.get('leverage', 10)}x")
     print(f"   - 倉位大小: {trading_config.get('position_size_pct', 0.15) * 100:.1f}%")
@@ -185,7 +185,7 @@ def create_ppo_model(env, config: dict):
         tensorboard_log=tensorboard_log
     )
 
-    print("   ✅ PPO 模型創建成功")
+    print("   [OK] PPO 模型創建成功")
     print(f"   - 策略: MlpPolicy")
     print(f"   - 設備: {ppo_config.get('device', 'cpu').upper()}")
     print(f"   - 學習率: {ppo_config.get('learning_rate', 3e-4)}")
@@ -208,7 +208,7 @@ def setup_callbacks(save_dir: str, config: dict):
     Returns:
         CallbackList: 回調列表
     """
-    print("\n📊 設置訓練回調...")
+    print("\n[CHART] 設置訓練回調...")
 
     # 創建保存目錄
     os.makedirs(save_dir, exist_ok=True)
@@ -228,7 +228,7 @@ def setup_callbacks(save_dir: str, config: dict):
         save_vecnormalize=False
     )
     callbacks.append(checkpoint_callback)
-    print(f"   ✅ Checkpoint Callback（每 {training_config.get('save_freq', 10000)} 步保存）")
+    print(f"   [OK] Checkpoint Callback（每 {training_config.get('save_freq', 10000)} 步保存）")
 
     # 2. Training metrics callback - CSV log
     enable_detailed_logging = training_config.get('enable_detailed_logging', True)
@@ -246,14 +246,14 @@ def setup_callbacks(save_dir: str, config: dict):
     callbacks.append(metrics_callback)
 
     if enable_detailed_logging:
-        print("   ✅ TrainingMetrics Callback: 詳細記錄模式 (34+ 指標)")
+        print("   [OK] TrainingMetrics Callback: 詳細記錄模式 (34+ 指標)")
     else:
-        print("   ✅ TrainingMetrics Callback: 精簡記錄模式 (7 基本指標)")
+        print("   [OK] TrainingMetrics Callback: 精簡記錄模式 (7 基本指標)")
         print("   ⚡ 效能優化：已停用詳細指標計算")
 
     callback_list = CallbackList(callbacks)
 
-    print(f"   ✅ 共設置 {len(callbacks)} 個回調")
+    print(f"   [OK] 共設置 {len(callbacks)} 個回調")
 
     return callback_list
 
@@ -290,7 +290,7 @@ def train_model(
         )
 
         print("\n" + "=" * 60)
-        print("✅ 訓練完成！")
+        print("[OK] 訓練完成！")
         print("=" * 60)
 
         # 保存最終模型
@@ -311,7 +311,7 @@ def train_model(
         return False
 
     except Exception as e:
-        print(f"\n❌ 訓練過程中發生錯誤: {e}")
+        print(f"\n[ERR] 訓練過程中發生錯誤: {e}")
         import traceback
         traceback.print_exc()
 
@@ -321,50 +321,50 @@ def train_model(
 def main():
     """主訓練流程"""
     print("\n" + "=" * 60)
-    print("💰 PPO Trading Bot - 訓練系統")
+    print("[PPO] PPO Trading Bot - Training System")
     print("=" * 60)
     print("基於 ICT 策略的加密貨幣交易機器人")
     print("=" * 60 + "\n")
 
     # 1. 載入配置
-    print("📋 步驟 1/6: 載入配置文件")
+    print("[*] 步驟 1/6: 載入配置文件")
     try:
         config = load_config("config.yaml")
-        print("   ✅ 配置載入成功\n")
+        print("   [OK] 配置載入成功\n")
     except Exception as e:
-        print(f"   ❌ 配置載入失敗: {e}")
+        print(f"   [ERR] 配置載入失敗: {e}")
         return
 
     # 2. 載入訓練數據
-    print("📋 步驟 2/6: 載入訓練數據")
+    print("[*] 步驟 2/6: 載入訓練數據")
     try:
         df_train = load_training_data(config)
     except Exception as e:
-        print(f"   ❌ 數據載入失敗: {e}")
+        print(f"   [ERR] 數據載入失敗: {e}")
         import traceback
         traceback.print_exc()
         return
 
     # 3. 創建訓練環境
-    print("📋 步驟 3/6: 創建訓練環境")
+    print("[*] 步驟 3/6: 創建訓練環境")
     try:
         env = create_training_env(df_train, config)
     except Exception as e:
-        print(f"   ❌ 環境創建失敗: {e}")
+        print(f"   [ERR] 環境創建失敗: {e}")
         import traceback
         traceback.print_exc()
         return
 
     # 4. 創建 PPO 模型
-    print("📋 步驟 4/6: 創建 PPO 模型")
+    print("[*] 步驟 4/6: 創建 PPO 模型")
     try:
         model = create_ppo_model(env, config)
     except Exception as e:
-        print(f"   ❌ 模型創建失敗: {e}")
+        print(f"   [ERR] 模型創建失敗: {e}")
         return
 
     # 5. 設置回調
-    print("📋 步驟 5/6: 設置訓練回調")
+    print("[*] 步驟 5/6: 設置訓練回調")
     try:
         # 創建保存目錄（帶時間戳）
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -375,14 +375,14 @@ def main():
         # 保存配置文件副本
         import shutil
         shutil.copy("config.yaml", f"{save_dir}/config.yaml")
-        print(f"   ✅ 配置文件已複製到: {save_dir}/config.yaml")
+        print(f"   [OK] 配置文件已複製到: {save_dir}/config.yaml")
 
     except Exception as e:
-        print(f"   ❌ 回調設置失敗: {e}")
+        print(f"   [ERR] 回調設置失敗: {e}")
         return
 
     # 6. 開始訓練
-    print("📋 步驟 6/6: 開始訓練")
+    print("[*] 步驟 6/6: 開始訓練")
     try:
         total_timesteps = config.get('training', {}).get('total_timesteps', 100000)
 
@@ -399,7 +399,7 @@ def main():
 
             # 生成訓練監控圖表
             try:
-                print("\n📊 正在生成訓練監控圖表...")
+                print("\n[CHART] 正在生成訓練監控圖表...")
                 training_log_path = f"{save_dir}/training_log.csv"
                 plot_training_metrics(
                     log_csv_path=training_log_path,
@@ -420,14 +420,14 @@ def main():
             print("\n⚠️ 訓練未正常完成，請檢查上述錯誤信息")
 
     except Exception as e:
-        print(f"   ❌ 訓練失敗: {e}")
+        print(f"   [ERR] 訓練失敗: {e}")
         import traceback
         traceback.print_exc()
         return
 
     # 清理
     env.close()
-    print("\n✅ 環境已關閉")
+    print("\n[OK] 環境已關閉")
 
 
 if __name__ == "__main__":

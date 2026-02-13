@@ -125,14 +125,33 @@ def count_stop_losses(trades: pd.DataFrame) -> int:
     return int((valid & (long_hit | short_hit)).sum())
 
 
-def build_metrics(stats: pd.Series, trades: pd.DataFrame) -> Dict:
+def build_metrics(stats: pd.Series, trades: pd.DataFrame, data_index: pd.Index = None) -> Dict:
     wins = trades["PnL"] > 0 if not trades.empty else []
     losses = trades["PnL"] < 0 if not trades.empty else []
 
     avg_duration = stats.get("Avg. Trade Duration")
     avg_duration_str = str(avg_duration) if avg_duration is not None else "n/a"
 
+    # 計算回測時間範圍
+    start_date = None
+    end_date = None
+    duration_days = 0.0
+    avg_trades_per_day = 0.0
+
+    if data_index is not None and len(data_index) > 0:
+        start_date = data_index[0]
+        end_date = data_index[-1]
+        if hasattr(start_date, 'strftime'):
+            duration = end_date - start_date
+            duration_days = duration.total_seconds() / 86400  # 轉換為天數
+            total_trades = int(stats.get("# Trades", 0))
+            avg_trades_per_day = total_trades / duration_days if duration_days > 0 else 0.0
+
     metrics = {
+        "backtest_start": start_date.strftime("%Y-%m-%d %H:%M") if start_date and hasattr(start_date, 'strftime') else "n/a",
+        "backtest_end": end_date.strftime("%Y-%m-%d %H:%M") if end_date and hasattr(end_date, 'strftime') else "n/a",
+        "backtest_duration_days": round(duration_days, 2),
+        "avg_trades_per_day": round(avg_trades_per_day, 2),
         "total_return_pct": float(stats.get("Return [%]", 0.0)),
         "annualized_return_pct": float(stats.get("Return (Ann.) [%]", 0.0)),
         "sharpe_ratio": float(stats.get("Sharpe Ratio", 0.0)),
@@ -227,7 +246,7 @@ def main() -> None:
         fig.savefig(output_dir / "equity_curve.png", dpi=150)
         plt.close(fig)
 
-    metrics = build_metrics(stats, trades)
+    metrics = build_metrics(stats, trades, bt_data.index)
     metrics.update({
         "data_path": str(data_path),
         "model_path": str(model_path),
@@ -241,11 +260,17 @@ def main() -> None:
     print("\n" + "=" * 60)
     print("  Backtest Results")
     print("=" * 60)
+    print(f"  Period:          {metrics['backtest_start']} ~ {metrics['backtest_end']}")
+    print(f"  Duration:        {metrics['backtest_duration_days']:.1f} days")
+    print("-" * 60)
     print(f"  Total Return:    {metrics['total_return_pct']:+.2f}%")
     print(f"  Sharpe Ratio:    {metrics['sharpe_ratio']:.2f}")
     print(f"  Max Drawdown:    {metrics['max_drawdown_pct']:.2f}%")
     print(f"  Win Rate:        {metrics['win_rate_pct']:.1f}%")
+    print(f"  Profit Factor:   {metrics['profit_factor']:.2f}")
+    print("-" * 60)
     print(f"  Total Trades:    {metrics['total_trades']}")
+    print(f"  Avg Trades/Day:  {metrics['avg_trades_per_day']:.1f}")
     print(f"  Stop Losses:     {metrics['stop_loss_count']}")
     print("=" * 60)
     print(f"\n  Output: {output_dir}")

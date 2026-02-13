@@ -1,4 +1,4 @@
-//指令複製用 claude chat --model claude-sonnet-4-5-20250929
+
 # PPO Trading Model - 專案規格文檔
 
 > 本文檔用於快速了解專案的完整設計與實現細節
