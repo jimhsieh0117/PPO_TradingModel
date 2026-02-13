@@ -87,17 +87,18 @@ training:
   log_dir: "logs"
   tensorboard_log: "tensorboard"
 
-# ==================== 獎勵函數設定 (v7 簡化版) ====================
-# v7 簡化設計：只使用已實現盈虧，讓 Value Network 能學到清晰信號
+# ==================== 獎勵函數設定 (v7.1 簡化版) ====================
+# v7.1 設計：已實現盈虧為主 + 微小浮動信號輔助 Value Network 學習
 #
 # 獎勵公式：
-#   reward = (realized_pnl / initial_balance) * pnl_reward_scale
+#   reward = (realized_pnl / initial_balance) * pnl_reward_scale     # 平倉時
+#   reward += (floating_pnl_pct) * floating_reward_scale              # 每步（持倉時）
 #   if stop_loss: reward -= stop_loss_extra_penalty
 #
 reward:
-  # v7 簡化版參數（目前在 trading_env.py 中硬編碼，這裡保留供未來配置）
-  pnl_reward_scale: 500            # 盈虧縮放係數（1.5% 盈虧 = ±7.5 reward）
-  stop_loss_extra_penalty: 3.0     # 止損額外懲罰（主要損失已在 realized_pnl 中）
+  pnl_reward_scale: 500            # 已實現盈虧縮放（1.5% = ±7.5 reward）
+  floating_reward_scale: 50        # 浮動盈虧縮放（比 realized 小 10 倍，1% = 0.5 reward）
+  stop_loss_extra_penalty: 3.0     # 止損額外懲罰
 
 # ==================== ICT 特徵參數 ====================
 features:

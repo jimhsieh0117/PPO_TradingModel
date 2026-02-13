@@ -33,8 +33,9 @@ class TradingEnv(gym.Env):
     觀察空間:
         20 維 ICT 特徵向量
 
-    獎勵設計 (v7 簡化版):
-        - 只使用已實現盈虧（平倉時才有獎勵）
+    獎勵設計 (v7.1 簡化版):
+        - 主要：已實現盈虧（平倉時，權重 500）
+        - 輔助：微小浮動盈虧（每步，權重 50，幫助 Value Network 學習）
         - 止損給予額外小懲罰
         - 目的：讓 Value Network 能學到清晰的價值信號
     """
@@ -115,11 +116,12 @@ class TradingEnv(gym.Env):
             print("[TradingEnv] Precomputing features...")
             self.feature_aggregator.precompute_all_features(self.df, verbose=True)
 
-        # === 獎勵參數 (v7 簡化版) ===
+        # === 獎勵參數 (v7.1 簡化版 + 浮動信號) ===
         self.reward_config = reward_config or {}
 
-        # v7 簡化版：只使用已實現盈虧
+        # v7.1：已實現盈虧 + 微小浮動信號
         self.pnl_reward_scale = float(self.reward_config.get('pnl_reward_scale', 500))
+        self.floating_reward_scale = float(self.reward_config.get('floating_reward_scale', 50))  # 比 realized 小 10 倍
         self.stop_loss_extra_penalty = float(self.reward_config.get('stop_loss_extra_penalty', 3.0))
 
         # 夏普比率相關（用於統計追蹤，不用於獎勵）
@@ -496,15 +498,17 @@ class TradingEnv(gym.Env):
         stop_loss_triggered: bool
     ) -> float:
         """
-        【v7 簡化版】只使用已實現盈虧
+        【v7.1】簡化版 + 微小浮動盈虧信號
 
-        目的：讓 Value Network 能真正學到「什麼狀態能帶來利潤」
+        目的：讓 Value Network 能學到「什麼狀態能帶來利潤」
 
         設計原則：
-        1. 只有平倉時才有獎勵（已實現盈虧）
-        2. 止損給予額外懲罰（風險管理）
-        3. 不做複雜的 shaping，讓信號清晰
+        1. 主要獎勵：已實現盈虧（平倉時）
+        2. 輔助信號：微小浮動盈虧（每步，幫助 Value Network 學習）
+        3. 止損額外懲罰
         4. 獎勵範圍：約 [-10, +10]
+
+        v7.1 改進：加入每步浮動盈虧信號，讓 Value Network 有連續學習信號
         """
         reward = 0.0
 
@@ -513,13 +517,22 @@ class TradingEnv(gym.Env):
         step_return = equity_change / self.initial_balance
         self.recent_returns.append(step_return)
 
-        # === 核心：已實現盈虧（平倉時才有）===
+        # === 核心：已實現盈虧（平倉時才有，主要獎勵）===
         if self.realized_this_step:
-            # 將盈虧轉換為合理範圍的獎勵
-            # realized_pnl 約 -150 ~ +150 USDT (1.5% of 10000)
-            # 轉換為 -10 ~ +10 的獎勵
             realized_return = self.last_realized_pnl / self.initial_balance
-            reward = realized_return * self.pnl_reward_scale
+            reward = realized_return * self.pnl_reward_scale  # 約 ±7.5
+
+        # === v7.1 新增：微小浮動盈虧信號（每步，輔助學習）===
+        if self.position != 0 and self.entry_price > 0:
+            current_price = self._close_prices[self.current_step]
+            if self.position == 1:  # 多倉
+                floating_pct = (current_price - self.entry_price) / self.entry_price
+            else:  # 空倉
+                floating_pct = (self.entry_price - current_price) / self.entry_price
+
+            # 微小信號：比 realized 小 10 倍，讓 Value Network 有學習方向
+            # 1% 浮盈 = 0.5 reward（vs realized 的 5.0）
+            reward += floating_pct * self.floating_reward_scale
 
         # === 止損額外懲罰（風險管理信號）===
         if stop_loss_triggered:
@@ -539,7 +552,6 @@ class TradingEnv(gym.Env):
         self.realized_this_step = False
         self.last_realized_pnl = 0.0
 
-        # 不做 normalization，保持獎勵信號清晰
         return reward
 
     def _normalize_reward(self, reward: float) -> float:
