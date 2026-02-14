@@ -3,18 +3,25 @@
 數據下載腳本 - 從 Binance Futures API 下載 BTCUSDT 1分K 數據
 
 功能：
-1. 下載最近 6 個月的 BTCUSDT 永續合約 1分K 數據
-2. 自動分割為訓練集（5個月）和測試集（1個月）
+1. 下載指定日期範圍的 BTCUSDT 永續合約 1分K 數據
+2. 自動分割為訓練集和測試集（按日期或比例）
 3. 保存為 CSV 格式
 4. 顯示下載進度
 5. 驗證數據完整性
+6. 支持自動重試
+
+用法：
+  python download_data.py                           # 預設：最近 6 個月
+  python download_data.py --start 2020-01-01 --end 2025-12-31
+  python download_data.py --start 2020-01-01 --end 2025-12-31 --test-start 2025-01-01
 
 作者：PPO Trading Team
-日期：2026-01-14
+日期：2026-01-14（v2: 支援日期範圍下載）
 """
 
 import os
 import sys
+import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
 import pandas as pd
@@ -53,34 +60,41 @@ class BinanceDataDownloader:
         print(f"   K線間隔: {self.interval}")
         print(f"   數據保存路徑: {self.raw_dir}")
 
-    def get_klines(self, start_time, end_time, limit=1500):
+    def get_klines(self, start_time, end_time, limit=1500, max_retries=5):
         """
-        獲取 K線數據
+        獲取 K線數據（帶自動重試）
 
         Args:
             start_time: 開始時間戳（毫秒）
             end_time: 結束時間戳（毫秒）
             limit: 每次請求的數量限制（最大 1500）
+            max_retries: 最大重試次數
 
         Returns:
             K線數據列表
         """
-        try:
-            klines = self.client.klines(
-                symbol=self.symbol,
-                interval=self.interval,
-                startTime=start_time,
-                endTime=end_time,
-                limit=limit
-            )
-            return klines
-        except Exception as e:
-            print(f"❌ API 請求失敗: {e}")
-            return None
+        for attempt in range(max_retries):
+            try:
+                klines = self.client.klines(
+                    symbol=self.symbol,
+                    interval=self.interval,
+                    startTime=start_time,
+                    endTime=end_time,
+                    limit=limit
+                )
+                return klines
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait = 2 ** attempt  # exponential backoff
+                    print(f"\n   retry {attempt+1}/{max_retries}: {e}, wait {wait}s...")
+                    time.sleep(wait)
+                else:
+                    print(f"\n   API failed after {max_retries} retries: {e}")
+                    return None
 
     def download_data(self, months=6):
         """
-        下載指定月數的歷史數據
+        下載指定月數的歷史數據（從當前時間倒推）
 
         Args:
             months: 下載的月數（默認 6 個月）
@@ -88,66 +102,78 @@ class BinanceDataDownloader:
         Returns:
             DataFrame: 下載的數據
         """
-        print(f"\n📊 開始下載 {months} 個月的 {self.symbol} 數據...")
-
-        # 計算時間範圍
         end_time = datetime.now()
         start_time = end_time - timedelta(days=months * 30)
+        return self.download_by_date_range(
+            start_time.strftime('%Y-%m-%d'),
+            end_time.strftime('%Y-%m-%d')
+        )
 
-        print(f"   開始時間: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"   結束時間: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    def download_by_date_range(self, start_date: str, end_date: str):
+        """
+        下載指定日期範圍的歷史數據
 
-        # 轉換為毫秒時間戳
+        Args:
+            start_date: 開始日期，格式 'YYYY-MM-DD'
+            end_date: 結束日期，格式 'YYYY-MM-DD'
+
+        Returns:
+            DataFrame: 下載的數據
+        """
+        start_time = datetime.strptime(start_date, '%Y-%m-%d')
+        end_time = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1) - timedelta(seconds=1)
+
+        total_days = (end_time - start_time).days
+        print(f"\n📊 開始下載 {self.symbol} 數據...")
+        print(f"   日期範圍: {start_date} ~ {end_date} ({total_days} 天)")
+
         start_ms = int(start_time.timestamp() * 1000)
         end_ms = int(end_time.timestamp() * 1000)
 
-        # 計算預計的 K 線數量（1分K = 每小時60根 * 24小時 * 天數）
-        total_days = (end_time - start_time).days
         estimated_klines = total_days * 24 * 60
         print(f"   預計 K 線數: ~{estimated_klines:,} 根\n")
 
-        # 分批下載數據
         all_klines = []
         current_start = start_ms
-
-        # 每次請求最多 1500 根 K 線
         limit = 1500
-        interval_ms = 60 * 1000  # 1分鐘 = 60,000 毫秒
+        interval_ms = 60 * 1000
 
-        # 創建進度條
         pbar = tqdm(total=estimated_klines, desc="下載進度", unit="根K線")
 
+        consecutive_failures = 0
+        max_consecutive_failures = 10
+
         while current_start < end_ms:
-            # 計算這一批的結束時間
             batch_end = min(current_start + (limit * interval_ms), end_ms)
 
-            # 下載數據
             klines = self.get_klines(current_start, batch_end, limit)
 
             if klines is None or len(klines) == 0:
-                print(f"⚠️  警告: 無法獲取數據，跳過此批次")
-                break
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    print(f"\n❌ 連續 {max_consecutive_failures} 次失敗，中止下載")
+                    break
+                current_start = batch_end + 1
+                time.sleep(1)
+                continue
 
+            consecutive_failures = 0
             all_klines.extend(klines)
             pbar.update(len(klines))
 
-            # 更新下一批的開始時間（使用最後一根K線的時間 + 1ms）
             current_start = int(klines[-1][0]) + 1
+            time.sleep(0.05)
 
-            # 避免 API 速率限制
-            time.sleep(0.1)
-
-            # 如果返回的數據少於 limit，說明已經到達最新數據
-            if len(klines) < limit:
+            if len(klines) < limit and current_start < end_ms:
+                continue
+            elif len(klines) < limit:
                 break
 
         pbar.close()
 
         print(f"\n✅ 下載完成！共獲得 {len(all_klines):,} 根 K 線\n")
 
-        # 轉換為 DataFrame
         df = self._klines_to_dataframe(all_klines)
-
         return df
 
     def _klines_to_dataframe(self, klines):
@@ -189,7 +215,7 @@ class BinanceDataDownloader:
 
     def split_train_test(self, df, train_months=5, test_months=1):
         """
-        分割訓練集和測試集
+        按比例分割訓練集和測試集
 
         Args:
             df: 完整數據
@@ -203,14 +229,35 @@ class BinanceDataDownloader:
         print(f"   訓練集: {train_months} 個月")
         print(f"   測試集: {test_months} 個月")
 
-        # 計算分割點
         total_rows = len(df)
         train_ratio = train_months / (train_months + test_months)
         split_idx = int(total_rows * train_ratio)
 
-        # 分割
         train_df = df.iloc[:split_idx].copy()
         test_df = df.iloc[split_idx:].copy()
+
+        print(f"\n   訓練集: {len(train_df):,} 根K線 ({train_df.index[0]} 到 {train_df.index[-1]})")
+        print(f"   測試集: {len(test_df):,} 根K線 ({test_df.index[0]} 到 {test_df.index[-1]})")
+
+        return train_df, test_df
+
+    def split_train_test_by_date(self, df, test_start_date: str):
+        """
+        按日期分割訓練集和測試集
+
+        Args:
+            df: 完整數據
+            test_start_date: 測試集開始日期，格式 'YYYY-MM-DD'
+
+        Returns:
+            train_df, test_df: 訓練集和測試集
+        """
+        split_dt = pd.Timestamp(test_start_date)
+        print(f"📂 按日期分割數據集...")
+        print(f"   分割日期: {test_start_date}")
+
+        train_df = df[df.index < split_dt].copy()
+        test_df = df[df.index >= split_dt].copy()
 
         print(f"\n   訓練集: {len(train_df):,} 根K線 ({train_df.index[0]} 到 {train_df.index[-1]})")
         print(f"   測試集: {len(test_df):,} 根K線 ({test_df.index[0]} 到 {test_df.index[-1]})")
@@ -361,17 +408,46 @@ class BinanceDataDownloader:
         print(f"      最大成交量: {df['volume'].max():,.2f}")
 
 
+def parse_args():
+    """解析命令列參數"""
+    parser = argparse.ArgumentParser(
+        description='PPO Trading Model - 數據下載工具',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""範例:
+  python download_data.py                                            # 最近 6 個月
+  python download_data.py --months 12                                # 最近 12 個月
+  python download_data.py --start 2020-01-01 --end 2025-12-31       # 指定日期範圍
+  python download_data.py --start 2020-01-01 --end 2025-12-31 --test-start 2025-01-01
+        """
+    )
+    parser.add_argument('--start', type=str, default=None,
+                        help='開始日期 (YYYY-MM-DD)')
+    parser.add_argument('--end', type=str, default=None,
+                        help='結束日期 (YYYY-MM-DD)')
+    parser.add_argument('--months', type=int, default=6,
+                        help='倒推月數 (預設: 6，僅在未指定 --start/--end 時生效)')
+    parser.add_argument('--test-start', type=str, default=None,
+                        help='測試集開始日期 (YYYY-MM-DD)，未指定則按比例分割')
+    parser.add_argument('--symbol', type=str, default='BTCUSDT',
+                        help='交易對符號 (預設: BTCUSDT)')
+    return parser.parse_args()
+
+
 def main():
     """主函數"""
+    args = parse_args()
+
     print("=" * 60)
     print("  📊 PPO Trading Model - 數據下載工具")
     print("=" * 60)
 
-    # 初始化下載器
-    downloader = BinanceDataDownloader(symbol="BTCUSDT", interval="1m")
+    downloader = BinanceDataDownloader(symbol=args.symbol, interval="1m")
 
-    # 下載數據（6 個月）
-    full_df = downloader.download_data(months=6)
+    # 下載數據
+    if args.start and args.end:
+        full_df = downloader.download_by_date_range(args.start, args.end)
+    else:
+        full_df = downloader.download_data(months=args.months)
 
     # 驗證數據
     downloader.validate_data(full_df)
@@ -380,7 +456,10 @@ def main():
     downloader.generate_summary(full_df)
 
     # 分割訓練集和測試集
-    train_df, test_df = downloader.split_train_test(full_df, train_months=5, test_months=1)
+    if args.test_start:
+        train_df, test_df = downloader.split_train_test_by_date(full_df, args.test_start)
+    else:
+        train_df, test_df = downloader.split_train_test(full_df, train_months=5, test_months=1)
 
     # 保存數據
     train_file, test_file, full_file = downloader.save_data(train_df, test_df, full_df)
@@ -390,8 +469,7 @@ def main():
     print("=" * 60)
     print(f"\n💡 下一步:")
     print(f"   1. 檢查數據品質: 查看上面的驗證結果")
-    print(f"   2. 開始特徵工程: 實現 ICT 特徵檢測")
-    print(f"   3. 建立交易環境: 創建 Gymnasium 環境")
+    print(f"   2. 開始訓練: python train.py")
     print(f"\n🚀 讓我們繼續賺大錢！💰\n")
 
 
