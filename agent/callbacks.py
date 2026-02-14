@@ -160,7 +160,8 @@ class TrainingMetricsCallback(BaseCallback):
         max_drawdown = row.get("max_drawdown")
         if episode_return_pct is None or sharpe_ratio is None or max_drawdown is None:
             return
-        if float(sharpe_ratio) <= 1.3 or float(max_drawdown) > 0.25:
+        # v9: 放寬門檻，只保留 drawdown 安全閥（原 sharpe>1.3 導致從未保存）
+        if float(max_drawdown) > 0.50:
             return
 
         current_return = float(episode_return_pct)

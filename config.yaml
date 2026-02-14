@@ -54,7 +54,7 @@ ppo:
   clip_range: 0.2                 # PPO Clip 範圍（v5: 0.23 → 0.2 標準值）
   clip_range_vf: null             # Value Function Clip（null = 不裁剪）
   ent_coef: 0.2                    # 熵係數（v8.1: 0.1 → 0.2 恢復探索，避免過早收斂）
-  vf_coef: 2.0                    # Value Function 係數（v5: 0.5 → 1.0 加強 value network）
+  vf_coef: 0.5                    # Value Function 係數（v9: 2.0 → 0.5 恢復默認，避免 value loss 主導梯度）
   max_grad_norm: 0.5              # 梯度裁剪
 
   # 神經網絡架構
@@ -87,8 +87,8 @@ training:
   log_dir: "logs"
   tensorboard_log: "tensorboard"
 
-# ==================== 獎勵函數設定 (v8.1) ====================
-# v8.1 設計：保留品質獎勵框架，回退過度抑制參數
+# ==================== 獎勵函數設定 (v9.0) ====================
+# v9.0 設計：以已實現 PnL 為主導，大幅降低浮動獎勵權重
 #
 # 獎勵公式：
 #   reward = (realized_pnl / initial_balance) * pnl_reward_scale     # 平倉時
@@ -99,11 +99,11 @@ training:
 #
 reward:
   pnl_reward_scale: 500            # 已實現盈虧縮放（1.5% = ±7.5 reward）
-  floating_reward_scale: 120       # 浮動盈虧縮放（v8.1: 80 → 120 恢復信號強度）
+  floating_reward_scale: 30        # 浮動盈虧縮放（v9: 120 → 30 讓已實現 PnL 主導 reward）
   stop_loss_extra_penalty: 3.0     # 止損額外懲罰
-  holding_bonus_max: 0.3           # v8.1: 1.5 → 0.3 大幅削弱，避免死抱倉位
+  holding_bonus_max: 0.0           # v9: 移除，浮動獎勵已提供持倉信號
   holding_bonus_steps: 30          # 達到最大獎勵的持倉步數
-  rapid_reentry_penalty: 0.1       # v8.1: 0.5 → 0.1 降低交易懲罰
+  rapid_reentry_penalty: 0.0       # v9: 移除，手續費本身即為天然懲罰
   rapid_reentry_threshold: 3       # 重新開倉閾值（步）
 
 # ==================== ICT 特徵參數 ====================

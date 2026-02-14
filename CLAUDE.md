@@ -18,22 +18,22 @@
 |------|-----|------|
 | 交易標的 | BTCUSDT | 幣安永續合約 |
 | 時間框架 | 1分K | 短線交易 |
-| 槓桿倍數 | 10x | 固定槓桿 |
-| 倉位大小 | 15% | 每次開倉使用資金比例 |
-| 實際敞口 | 150% | 15% × 10x |
+| 槓桿倍數 | 1x | 無槓桿（v9 配置） |
+| 倉位大小 | 100% | 全倉操作 |
+| 實際敞口 | 100% | 1.0 × 1x |
 | 止損設定 | 1.5% | 價格波動止損 |
 | 單日回撤限制 | 10% | 觸發停止交易 |
-| 初始資金 | 10,000 USDT | 模擬訓練資金 |
+| 初始資金 | 1,000,000 USDT | 回測資金 |
 
 ### 交易成本
-- **手續費**：0.04% (taker)
+- **手續費**：0.04% (taker)，開倉+平倉各一次 = 每筆 0.08%
 - **滑點**：暫不模擬
 - **同時持倉**：最多 1 個倉位
 
 ### 風險分析
-- 單次止損損失：15% × 10x × 1.5% = **2.25% 賬戶**
-- 連續 4-5 次止損接近單日回撤限制
-- 價格 2% 波動 = **30% 賬戶損失**（理論最大）
+- 單次止損損失：100% × 1x × 1.5% = **1.5% 賬戶**
+- 每 episode (~100 筆交易) 手續費累計約 8%
+- 價格 2% 波動 = **2% 賬戶變動**
 
 ---
 
@@ -50,74 +50,70 @@ Action Space: Discrete(4)
 }
 ```
 
-### 狀態空間特徵（~20 維）
+### 狀態空間特徵（25 維 = 20 ICT + 5 持倉狀態）
 
 #### 1. 市場結構 (Market Structure) - 3 個
-- `trend_state`: {-1: 下降趨勢, 0: 震盪, 1: 上升趨勢}
-- `structure_signal`: {-1: Bearish ChoCh, 0: 無變化, 1: Bullish BOS}
-- `bars_since_structure_change`: 距離上次結構轉變的 K 線數
+- `trend_state`, `structure_signal`, `bars_since_structure_change`
 
 #### 2. Order Blocks - 4 個
-- `dist_to_bullish_ob`: 距離最近看漲 OB 的百分比距離
-- `dist_to_bearish_ob`: 距離最近看跌 OB 的百分比距離
-- `in_bullish_ob`: 是否在看漲 OB 內 (0/1)
-- `in_bearish_ob`: 是否在看跌 OB 內 (0/1)
+- `dist_to_bullish_ob`, `dist_to_bearish_ob`, `in_bullish_ob`, `in_bearish_ob`
 
 #### 3. Fair Value Gaps - 3 個
-- `in_bullish_fvg`: 是否在看漲 FVG 內 (0/1)
-- `in_bearish_fvg`: 是否在看跌 FVG 內 (0/1)
-- `nearest_fvg_direction`: 最近未填補 FVG 方向 {-1, 0, 1}
+- `in_bullish_fvg`, `in_bearish_fvg`, `nearest_fvg_direction`
 
 #### 4. Liquidity - 3 個
-- `liquidity_above`: 上方流動性距離（前高）百分比
-- `liquidity_below`: 下方流動性距離（前低）百分比
-- `liquidity_sweep`: 是否剛發生流動性掃蕩 (0/1)
+- `liquidity_above`, `liquidity_below`, `liquidity_sweep`
 
-#### 5. Premium/Discount Zones - 2 個
-- `price_position_in_range`: 當前價格在波段中的位置 (0-100%)
-- `zone_classification`: {-1: Discount, 0: Equilibrium, 1: Premium}
+#### 5. Volume & Price - 5 個
+- `volume_ratio`, `price_momentum`, `vwap_momentum`, `price_position_in_range`, `zone_classification`
 
-#### 6. 成交量與價格行為 - 3 個
-- `volume_ratio`: 當前成交量 / 平均成交量
-- `price_momentum`: 價格變化幅度（正規化）
-- `vwap_momentum`: 成交量加權價格動量
+#### 6. Multi-Timeframe - 2 個
+- `trend_5m`, `trend_15m`
 
-#### 7. 多時間框架確認 - 2 個
-- `trend_5m`: 5分K 趨勢方向 {-1, 0, 1}
-- `trend_15m`: 15分K 趨勢方向 {-1, 0, 1}
+#### 7. 持倉狀態（v8.0 新增）- 5 個
+- `position_state`: 持倉方向 {-1, 0, 1}
+- `floating_pnl_pct`: 浮動盈虧百分比
+- `holding_time_norm`: 持倉時間正規化 (0~1)
+- `distance_to_stop_loss`: 距止損距離 (0~1)
+- `equity_change_pct`: Episode 權益變化
 
-**總計：20 個特徵** ✅
+**總計：25 個特徵** ✅
 
 ---
 
-## 💰 獎勵函數設計 (v7.3)
+## 💰 獎勵函數設計 (v9.0)
 
 ### 當前參數設定
 ```yaml
 reward:
-  pnl_reward_scale: 500        # 已實現盈虧縮放（1.5% = ±7.5 reward）
-  floating_reward_scale: 150   # 浮動盈虧縮放（1% = 1.5 reward）
+  pnl_reward_scale: 500        # 已實現盈虧縮放（主導信號）
+  floating_reward_scale: 30    # v9: 120→30 大幅降低，避免壓倒已實現 PnL
   stop_loss_extra_penalty: 3.0 # 止損額外懲罰
+  holding_bonus_max: 0.0       # v9: 移除
+  rapid_reentry_penalty: 0.0   # v9: 移除，手續費即為天然懲罰
 ```
 
 ### 獎勵公式
 ```python
-# 平倉時：已實現盈虧獎勵
-reward = (realized_pnl / initial_balance) * pnl_reward_scale
+# 平倉時：已實現盈虧獎勵（主要信號）
+reward = (realized_pnl / initial_balance) * 500
 
-# 每步（持倉時）：浮動盈虧信號
-reward += (floating_pnl_pct) * floating_reward_scale
+# 每步（持倉時）：浮動盈虧信號（輔助，權重低）
+reward += floating_pnl_pct * 30
 
 # 止損懲罰
-if stop_loss:
-    reward -= stop_loss_extra_penalty
+if stop_loss: reward -= 3.0
+
+# EMA Reward Normalization（v9 重新啟用）
+reward = normalize_reward(reward)  # 穩定 critic target
 ```
 
-### 設計原則
-- ✅ 獲利正向激勵（pnl_reward_scale=500）
-- ✅ 浮動盈虧即時反饋（floating_reward_scale=150）
-- ✅ 止損觸發懲罰（引導學習避免止損）
-- ✅ 簡化設計，減少獎勵 hacking
+### v9.0 設計原則
+- ✅ 已實現 PnL 為主導信號（pnl_reward_scale=500）
+- ✅ 浮動獎勵僅為輔助（30，之前 120 導致 7:1 失衡）
+- ✅ 移除人工 shaping（holding_bonus, rapid_reentry_penalty）
+- ✅ 啟用 EMA reward normalization 穩定 value network
+- ✅ 手續費作為天然交易頻率約束
 
 ---
 
@@ -151,19 +147,21 @@ if stop_loss:
 - **測試數據**：1 個月回測數據（~43,200 根 1分K）
 - **數據分割**：時間序列分割，避免未來洩漏
 
-### 訓練設置 (當前配置)
+### 訓練設置 (v9.0 配置)
 | 參數 | 值 | 說明 |
 |------|-----|------|
 | Episode 長度 | 480 steps | 8 小時 = 1 個訓練回合 |
 | 更新頻率 | 2048 steps | PPO 更新間隔 |
 | 學習率 | 0.00015 | 穩定學習 |
 | Batch Size | 64 | 小批量訓練 |
-| N epochs | 10 | 每次更新的訓練輪數 |
+| N epochs | 8 | 每次更新的訓練輪數 |
 | Gamma | 0.95 | 折扣因子 |
 | GAE Lambda | 0.95 | 優勢估計參數 |
-| Entropy Coef | 0.3 | 高熵係數鼓勵探索 |
-| VF Coef | 2.0 | 加強 Value Network |
+| Entropy Coef | 0.2 | 探索係數 |
+| VF Coef | 0.5 | v9: 2.0→0.5 恢復默認，避免 value loss 主導 |
 | 手續費 | 0.04% | Taker 費率（必須啟用）|
+| 並行環境 | 6 | SubprocVecEnv |
+| 網路架構 | 256×256 | MlpPolicy |
 
 ### 訓練過程監控指標 ⭐（專業級）
 
@@ -471,6 +469,15 @@ PPO_TradingModel/
 
 ## 📝 版本記錄
 
+- **v0.4** (2026-02-14): v9.0 綜合改進（程式碼深度分析 + 訓練數據診斷）
+  - ✅ 修復 `vf_coef` 2.0→0.5（SB3 默認值，value loss 不再主導梯度）
+  - ✅ 重新啟用 EMA reward normalization（穩定 critic target）
+  - ✅ 放寬 best model 保存門檻（移除 sharpe>1.3 要求）
+  - ✅ 重新平衡 reward：`floating_reward_scale` 120→30
+  - ✅ 移除 `holding_bonus_max` 和 `rapid_reentry_penalty`
+  - ✅ 觀察空間更新至 25 維（新增 5 維持倉狀態）
+  - ✅ 診斷出浮動獎勵:已實現獎勵 = 7:1 失衡問題
+
 - **v0.3** (2026-02-13): 過擬合分析與最佳實踐
   - ✅ 更新獎勵函數至 v7.3（pnl_reward_scale=500, floating_reward_scale=150）
   - ✅ 新增過擬合分析章節（1M vs 2M 訓練對比）
@@ -504,4 +511,4 @@ PPO_TradingModel/
 
 ---
 
-*最後更新：2026-02-13*
+*最後更新：2026-02-14*
