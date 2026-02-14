@@ -33,11 +33,16 @@ class TradingEnv(gym.Env):
     觀察空間:
         20 維 ICT 特徵向量
 
-    獎勵設計 (v7.1 簡化版):
+    獎勵設計 (v8.0):
         - 主要：已實現盈虧（平倉時，權重 500）
-        - 輔助：微小浮動盈虧（每步，權重 50，幫助 Value Network 學習）
+        - 輔助：微小浮動盈虧（每步，權重由 config 控制）
+        - 盈利交易品質獎勵（鼓勵讓利潤奔跑）
+        - 頻繁交易懲罰（抑制無效交易）
         - 止損給予額外小懲罰
         - 目的：讓 Value Network 能學到清晰的價值信號
+
+    觀察空間:
+        25 維 = 20 ICT 特徵 + 5 持倉狀態特徵
     """
 
     metadata = {"render_modes": ["human"]}
@@ -116,13 +121,17 @@ class TradingEnv(gym.Env):
             print("[TradingEnv] Precomputing features...")
             self.feature_aggregator.precompute_all_features(self.df, verbose=True)
 
-        # === 獎勵參數 (v7.1 簡化版 + 浮動信號) ===
+        # === 獎勵參數 (v8.0：盈虧信號 + 品質獎勵 + 頻率懲罰) ===
         self.reward_config = reward_config or {}
 
-        # v7.1：已實現盈虧 + 微小浮動信號
+        # v8.0：已實現盈虧 + 浮動信號 + 品質獎勵
         self.pnl_reward_scale = float(self.reward_config.get('pnl_reward_scale', 500))
-        self.floating_reward_scale = float(self.reward_config.get('floating_reward_scale', 50))  # 比 realized 小 10 倍
+        self.floating_reward_scale = float(self.reward_config.get('floating_reward_scale', 80))  # v8.0: 降至 80
         self.stop_loss_extra_penalty = float(self.reward_config.get('stop_loss_extra_penalty', 3.0))
+        self.holding_bonus_max = float(self.reward_config.get('holding_bonus_max', 1.5))  # v8.0: 盈利持倉獎勵
+        self.holding_bonus_steps = float(self.reward_config.get('holding_bonus_steps', 30.0))  # 達到最大獎勵的步數
+        self.rapid_reentry_penalty = float(self.reward_config.get('rapid_reentry_penalty', 0.5))  # v8.0: 頻繁交易懲罰
+        self.rapid_reentry_threshold = int(self.reward_config.get('rapid_reentry_threshold', 3))  # 快速重開倉閾值（步）
 
         # 夏普比率相關（用於統計追蹤，不用於獎勵）
         self.sharpe_window = int(self.reward_config.get('sharpe_window', 60))
@@ -131,11 +140,13 @@ class TradingEnv(gym.Env):
         # 動作空間: 0=平倉, 1=做多, 2=做空, 3=持有
         self.action_space = spaces.Discrete(4)
 
-        # 觀察空間: 20 維 ICT 特徵
+        # 觀察空間: 25 維 = 20 ICT 特徵 + 5 持倉狀態特徵
+        # 新增維度: position_state, floating_pnl_pct, holding_time_norm,
+        #           distance_to_stop_loss, equity_change_pct
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(20,),
+            shape=(25,),
             dtype=np.float32
         )
 
@@ -316,12 +327,57 @@ class TradingEnv(gym.Env):
 
     def _get_observation(self) -> np.ndarray:
         """
-        獲取當前觀察（20維 ICT 特徵）
+        獲取當前觀察（25維 = 20 ICT + 5 持倉狀態）
 
-        交易員視角：我需要知道市場結構、關鍵區域、流動性等信息
+        交易員視角：我需要知道市場結構、關鍵區域、流動性，
+        以及自己的持倉狀態（方向、盈虧、風險距離）
         """
-        features = self.feature_aggregator.get_state_vector(self.df, self.current_step)
-        return features
+        # 20 維市場特徵
+        market_features = self.feature_aggregator.get_state_vector(self.df, self.current_step)
+
+        # 5 維持倉狀態特徵
+        current_price = self._close_prices[self.current_step]
+
+        # (21) 持倉方向: -1=空倉, 0=無倉位, 1=多倉
+        position_state = float(self.position)
+
+        # (22) 浮動盈虧百分比 (clipped to [-1, 1])
+        if self.position != 0 and self.entry_price > 0:
+            if self.position == 1:
+                floating_pnl_pct = (current_price - self.entry_price) / self.entry_price
+            else:
+                floating_pnl_pct = (self.entry_price - current_price) / self.entry_price
+            floating_pnl_pct = np.clip(floating_pnl_pct, -1.0, 1.0)
+        else:
+            floating_pnl_pct = 0.0
+
+        # (23) 持倉時間正規化 (0~1, 以 120 步 = 2 小時為上限)
+        holding_time_norm = min(self.holding_time / 120.0, 1.0) if self.position != 0 else 0.0
+
+        # (24) 距止損距離百分比 (0~1, 0=已觸及止損, 1=遠離止損)
+        if self.position != 0 and self.entry_price > 0:
+            if self.position == 1:  # 多倉: 價格越高離止損越遠
+                dist_to_sl = (current_price - self.stop_loss_price) / (self.entry_price - self.stop_loss_price + 1e-10)
+            else:  # 空倉: 價格越低離止損越遠
+                dist_to_sl = (self.stop_loss_price - current_price) / (self.stop_loss_price - self.entry_price + 1e-10)
+            dist_to_sl = np.clip(dist_to_sl, 0.0, 2.0) / 2.0  # 正規化到 0~1
+        else:
+            dist_to_sl = 0.0
+
+        # (25) Episode 至今的權益變化百分比 (clipped to [-1, 1])
+        equity_change_pct = (self.equity - self.initial_balance) / self.initial_balance
+        equity_change_pct = np.clip(equity_change_pct, -1.0, 1.0)
+
+        # 組合 25 維觀察向量
+        position_features = np.array([
+            position_state,
+            floating_pnl_pct,
+            holding_time_norm,
+            dist_to_sl,
+            equity_change_pct
+        ], dtype=np.float32)
+
+        return np.concatenate([market_features, position_features])
 
     def _check_stop_loss(self, current_price: float) -> bool:
         """
@@ -498,17 +554,22 @@ class TradingEnv(gym.Env):
         stop_loss_triggered: bool
     ) -> float:
         """
-        【v7.1】簡化版 + 微小浮動盈虧信號
+        【v8.0】盈虧信號 + 交易品質獎勵 + 頻率懲罰
 
         目的：讓 Value Network 能學到「什麼狀態能帶來利潤」
 
         設計原則：
         1. 主要獎勵：已實現盈虧（平倉時）
-        2. 輔助信號：微小浮動盈虧（每步，幫助 Value Network 學習）
-        3. 止損額外懲罰
-        4. 獎勵範圍：約 [-10, +10]
+        2. 輔助信號：浮動盈虧（每步，權重降低以避免壓過主信號）
+        3. 品質獎勵：盈利交易持倉越久獎勵越高（鼓勵讓利潤奔跑）
+        4. 頻率懲罰：快速重新開倉給予懲罰（減少無效交易）
+        5. 止損額外懲罰
+        6. 獎勵範圍：約 [-10, +10]
 
-        v7.1 改進：加入每步浮動盈虧信號，讓 Value Network 有連續學習信號
+        v8.0 改進：
+        - 浮動信號權重由 config 控制（建議 50~80）
+        - 新增盈利交易品質獎勵
+        - 新增頻繁交易懲罰
         """
         reward = 0.0
 
@@ -522,7 +583,15 @@ class TradingEnv(gym.Env):
             realized_return = self.last_realized_pnl / self.initial_balance
             reward = realized_return * self.pnl_reward_scale  # 約 ±7.5
 
-        # === v7.1 新增：微小浮動盈虧信號（每步，輔助學習）===
+            # === v8.0 新增：盈利交易品質獎勵（鼓勵讓利潤奔跑）===
+            if self.last_realized_pnl > 0:
+                # 持倉越久的盈利交易，給越多 bonus（非線性飽和）
+                # holding_time=30 步時達到最大獎勵
+                holding_ratio = min(self.holding_time / self.holding_bonus_steps, 1.0)
+                holding_bonus = holding_ratio * self.holding_bonus_max
+                reward += holding_bonus
+
+        # === 浮動盈虧信號（每步，輔助學習）===
         if self.position != 0 and self.entry_price > 0:
             current_price = self._close_prices[self.current_step]
             if self.position == 1:  # 多倉
@@ -530,9 +599,14 @@ class TradingEnv(gym.Env):
             else:  # 空倉
                 floating_pct = (self.entry_price - current_price) / self.entry_price
 
-            # 微小信號：比 realized 小 10 倍，讓 Value Network 有學習方向
-            # 1% 浮盈 = 0.5 reward（vs realized 的 5.0）
+            # 浮動信號：權重由 config 控制（v8.0 建議 50~80）
             reward += floating_pct * self.floating_reward_scale
+
+        # === v8.0 新增：頻繁交易懲罰（抑制無效交易）===
+        if trade_executed and action in [1, 2]:  # 開倉動作
+            steps_since_last_close = self.current_step - self.last_close_step
+            if steps_since_last_close < self.rapid_reentry_threshold:
+                reward -= self.rapid_reentry_penalty
 
         # === 止損額外懲罰（風險管理信號）===
         if stop_loss_triggered:
