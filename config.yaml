@@ -135,6 +135,21 @@ backtest:
   trades_csv: true                # 生成交易記錄 CSV
   plots: true                     # 生成圖表
 
+# ==================== Walk Forward Analysis ====================
+wfa:
+  train_window_months: 12           # 訓練窗口（月）
+  test_window_months: 2             # 測試窗口（月）
+  step_months: 2                    # 每次滾動步長（月）
+  total_timesteps: 500000           # 每個 fold 訓練步數
+  max_parallel_folds: 3             # 同時並行的 fold 數
+  n_cpu_per_fold: 2                 # 每個 fold 的環境數（DummyVecEnv）
+
+  # 通過標準
+  pass_criteria:
+    min_profitable_folds_ratio: 0.67  # 至少 67% fold 盈利
+    min_avg_sharpe: 1.3               # 平均 Sharpe > 1.3
+    max_fold_drawdown_pct: -10.0      # 單 fold 最大回撤不超過 -10%
+
 # ==================== 其他設定 ====================
 misc:
   random_seed: 42                 # 隨機種子（可重現性）

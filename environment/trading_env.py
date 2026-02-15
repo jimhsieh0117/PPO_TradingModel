@@ -193,13 +193,11 @@ class TradingEnv(gym.Env):
         self.equity_curve = [initial_balance]
         self.peak_equity = initial_balance
 
-        # === Reward Normalization (v9: 重新啟用，穩定 critic target) ===
-        self.normalize_reward = True  # v9: 重新啟用 EMA normalization
-        self._reward_ema_mean = 0.0      # EMA of reward mean
-        self._reward_ema_var = 1.0       # EMA of reward variance
-        self._reward_ema_alpha = 0.01    # EMA decay rate (smaller = more stable)
-        self._reward_clip = 5.0          # Clip normalized rewards to [-5, 5]
-        self._reward_warmup = 100        # Warmup steps before normalization
+        # === Reward Clipping (v10: 關閉 EMA normalization，改用固定 clip) ===
+        # EMA normalization 會因策略變化導致 reward 分布漂移，造成 value loss 上升
+        # 改用簡單 clip：穩定、無狀態、不受策略變化影響
+        self.normalize_reward = False
+        self._reward_clip = 10.0         # Clip raw rewards to [-10, 10]
         self._reward_step_count = 0
 
     def reset(
@@ -634,9 +632,11 @@ class TradingEnv(gym.Env):
         self.realized_this_step = False
         self.last_realized_pnl = 0.0
 
-        # v9: 應用 reward normalization（穩定 critic target）
+        # v10: 簡單 clip（取代 EMA normalization，避免非穩態 value target）
         if self.normalize_reward:
             reward = self._normalize_reward(reward)
+        else:
+            reward = max(min(reward, self._reward_clip), -self._reward_clip)
 
         return reward
 
