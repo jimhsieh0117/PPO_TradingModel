@@ -42,31 +42,28 @@ def load_training_data(config: dict) -> pd.DataFrame:
     """
     載入訓練數據
 
+    自動化流程：
+    1. 檢查 config 中設定的日期範圍是否已有對應數據
+    2. 若無 → 自動從 Binance 下載
+    3. 按 test_start_date 分割 train/test
+    4. 返回訓練集 DataFrame
+
     Args:
         config: 配置字典
 
     Returns:
-        DataFrame: OHLCV 數據
+        DataFrame: 訓練用 OHLCV 數據
     """
-    # 自動尋找最新的完整數據文件
-    raw_data_dir = config.get('data', {}).get('raw_data_dir', 'data/raw')
-    data_files = list(Path(raw_data_dir).glob('BTCUSDT_1m_full_*.csv'))
+    from utils.data_pipeline import ensure_data_ready
 
-    if not data_files:
-        raise FileNotFoundError(f"在 {raw_data_dir} 中找不到 BTCUSDT_1m_full_*.csv 文件")
+    train_df, _test_df = ensure_data_ready(config)
 
-    # 使用最新的文件
-    data_path = str(sorted(data_files)[-1])
+    print(f"\n   [OK] 訓練數據就緒")
+    print(f"   - 總 K 線數: {len(train_df):,}")
+    print(f"   - 時間範圍: {train_df['timestamp'].iloc[0]} 到 {train_df['timestamp'].iloc[-1]}")
+    print(f"   - 列名: {train_df.columns.tolist()}")
 
-    print(f"[DIR] 載入訓練數據: {data_path}")
-    df = pd.read_csv(data_path)
-
-    print(f"   [OK] 數據載入成功")
-    print(f"   - 總 K 線數: {len(df):,}")
-    print(f"   - 時間範圍: {df['timestamp'].iloc[0]} 到 {df['timestamp'].iloc[-1]}")
-    print(f"   - 列名: {df.columns.tolist()}")
-
-    return df
+    return train_df
 
 
 def create_training_env(df: pd.DataFrame, config: dict):

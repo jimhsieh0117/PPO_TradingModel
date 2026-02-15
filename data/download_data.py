@@ -84,9 +84,15 @@ class BinanceDataDownloader:
                 )
                 return klines
             except Exception as e:
+                err_str = str(e).lower()
                 if attempt < max_retries - 1:
-                    wait = 2 ** attempt  # exponential backoff
-                    print(f"\n   retry {attempt+1}/{max_retries}: {e}, wait {wait}s...")
+                    # 若為 rate limit (429)，等待更久
+                    if '429' in err_str or 'too many' in err_str or 'rate' in err_str:
+                        wait = 30  # rate limit 冷卻 30 秒
+                        print(f"\n   ⚠️ Rate limited! 等待 {wait}s 冷卻...")
+                    else:
+                        wait = 2 ** attempt  # exponential backoff
+                        print(f"\n   retry {attempt+1}/{max_retries}: {e}, wait {wait}s...")
                     time.sleep(wait)
                 else:
                     print(f"\n   API failed after {max_retries} retries: {e}")
@@ -162,7 +168,7 @@ class BinanceDataDownloader:
             pbar.update(len(klines))
 
             current_start = int(klines[-1][0]) + 1
-            time.sleep(0.05)
+            time.sleep(0.15)  # 避免觸發 Binance rate limit
 
             if len(klines) < limit and current_start < end_ms:
                 continue

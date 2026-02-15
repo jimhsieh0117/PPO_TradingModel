@@ -37,16 +37,37 @@ def find_latest_csv(data_dir: Path, pattern: str) -> Path:
 
 
 def load_test_data(config: Dict, data_path: Optional[str]) -> Tuple[pd.DataFrame, Path]:
-    data_dir = Path(config.get("data", {}).get("raw_data_dir", "data/raw"))
-    path = Path(data_path) if data_path else find_latest_csv(data_dir, "BTCUSDT_1m_test_*.csv")
+    # 如果明確指定了 data_path，直接使用
+    if data_path:
+        path = Path(data_path)
+        df = pd.read_csv(path)
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            df = df.set_index("timestamp")
+        df = df.sort_index()
+        return df, path
 
-    df = pd.read_csv(path)
-    if "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-        df = df.set_index("timestamp")
-    df = df.sort_index()
+    # 使用 data pipeline 自動取得測試數據
+    from utils.data_pipeline import ensure_data_ready, _build_expected_filename
 
-    return df, path
+    data_config = config.get("data", {})
+    _train_df, test_df = ensure_data_ready(config)
+
+    # test_df 來自 pipeline，timestamp 是列不是索引
+    if "timestamp" in test_df.columns:
+        test_df["timestamp"] = pd.to_datetime(test_df["timestamp"], errors="coerce")
+        test_df = test_df.set_index("timestamp")
+    test_df = test_df.sort_index()
+
+    # 構造虛擬路徑用於日誌顯示
+    expected_name = _build_expected_filename(
+        data_config.get("symbol", "BTCUSDT"),
+        data_config.get("start_date", "2020-01-01 00:00:00"),
+        data_config.get("end_date", "2025-12-31 23:59:59"),
+    )
+    path = Path(data_config.get("raw_data_dir", "data/raw")) / expected_name
+
+    return test_df, path
 
 
 def normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
