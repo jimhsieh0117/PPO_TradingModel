@@ -29,7 +29,7 @@ data:
   # 數據日期範圍（train.py 啟動時自動檢查，無數據則自動下載）
   symbol: "BTCUSDT"               # 交易對
   start_date: "2020-01-01 00:00:00"      # 全部數據的起始時間
-  end_date: "2025-12-31 23:59:59"        # 全部數據的結束時間
+  end_date: "2026-02-11 23:59:59"        # 全部數據的結束時間
   test_start_date: "2025-01-01 00:00:00" # 測試集起始時間（此時間之前為訓練集）
 
 # ==================== PPO 超參數 ====================
@@ -42,7 +42,7 @@ ppo:
   n_steps: 4096                   # 更新頻率（每 2048 steps 更新一次）- v8.1: 4096 → 2048 回退，CPU 上更快迭代
   batch_size: 64                 # 批次大小（GPU 優化）
 
-  n_epochs: 12                      # 每次更新訓練的輪數（v8.1: 6 → 8 折中值）
+  n_epochs: 8                      # 每次更新訓練的輪數（v8.1: 6 → 8 折中值）
 
   # 折扣與優勢估計
   gamma: 0.95                     # 折扣因子（v8.1: 0.97 → 0.95 回退，減少 value target 方差）
@@ -50,9 +50,9 @@ ppo:
 
   # PPO 特定參數
   clip_range: 0.2                 # PPO Clip 範圍（v5: 0.23 → 0.2 標準值）
-  clip_range_vf: null             # Value Function Clip（null = 不裁剪）
+  clip_range_vf: 0.2             # Value Function Clip（null = 不裁剪）
   ent_coef: 0.05                    # 熵係數（v8.1: 0.1 → 0.2 恢復探索，避免過早收斂）
-  vf_coef: 0.75                    # Value Function 係數（v9: 2.0 → 0.5 恢復默認，避免 value loss 主導梯度）
+  vf_coef: 0.5                    # Value Function 係數（v9: 2.0 → 0.5 恢復默認，避免 value loss 主導梯度）
   max_grad_norm: 0.5              # 梯度裁剪
 
   # 神經網絡架構
@@ -67,7 +67,7 @@ ppo:
 training:
   # Episode 設定
   episode_length: 480            # Episode 長度（1440 steps = 24 小時）
-  total_timesteps: 2000000        # 總訓練步數
+  total_timesteps: 1000000        # 總訓練步數
 
   # 日誌與保存
   log_interval: 10                # 每 N 個 episode 記錄一次
@@ -96,7 +96,7 @@ training:
 #   if stop_loss: reward -= stop_loss_extra_penalty
 #
 reward:
-  pnl_reward_scale: 500            # 已實現盈虧縮放（1.5% = ±7.5 reward）
+  pnl_reward_scale: 1000           # 已實現盈虧縮放（滑點加入後成本 2.25x，500→1000 強化獲利信號）
   floating_reward_scale: 30        # 浮動盈虧縮放（v9: 120 → 30 讓已實現 PnL 主導 reward）
   stop_loss_extra_penalty: 3.0     # 止損額外懲罰
   holding_bonus_max: 0.0           # v9: 移除，浮動獎勵已提供持倉信號

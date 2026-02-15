@@ -77,7 +77,7 @@ def create_training_env(df: pd.DataFrame, config: dict):
     Returns:
         VecEnv: 向量化環境
     """
-    print("\n🏗️ 創建交易環境...")
+    print("\n[BUILD] 創建交易環境...")
 
     # 從配置中獲取交易參數
     trading_config = config.get('trading', {})
@@ -156,7 +156,7 @@ def create_ppo_model(env, config: dict):
     Returns:
         PPO: PPO 模型實例
     """
-    print("\n🤖 創建 PPO 模型...")
+    print("\n[MODEL] 創建 PPO 模型...")
 
     # 從配置中獲取 PPO 參數
     ppo_config = config.get('ppo', {})
@@ -272,7 +272,7 @@ def train_model(
         save_dir: 保存目錄
     """
     print("\n" + "=" * 60)
-    print("🚀 開始訓練 PPO 交易代理")
+    print("[START] 開始訓練 PPO 交易代理")
     print("=" * 60)
     print(f"   總訓練步數: {total_timesteps:,}")
     print(f"   預計 Episodes: ~{total_timesteps // 1440}")

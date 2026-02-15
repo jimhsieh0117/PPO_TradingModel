@@ -47,7 +47,7 @@ def _find_existing_data(raw_dir: Path, expected_name: str) -> Path | None:
         print(f"   ℹ️  找到舊版 CSV: {csv_name}，將轉換為 Parquet...")
         df = pd.read_csv(csv_path)
         df.to_parquet(full_path, index=False)
-        print(f"   ✅ 已轉換為: {expected_name}")
+        print(f"   [OK] 已轉換為: {expected_name}")
         return full_path
     return None
 
@@ -76,9 +76,12 @@ def _download_data(symbol: str, start_date: str, end_date: str, raw_dir: Path,
     downloader.generate_summary(full_df)
 
     # 保存為 Parquet（壓縮 + 快速讀取）
+    # download_data 會把 timestamp 設為 index，需要還原為欄位再存
+    if full_df.index.name == 'timestamp':
+        full_df = full_df.reset_index()
     save_path = raw_dir / expected_name
     full_df.to_parquet(save_path, index=False)
-    print(f"   💾 數據已保存 (Parquet): {save_path}")
+    print(f"   [OK] 數據已保存 (Parquet): {save_path}")
 
     return save_path
 
@@ -169,9 +172,9 @@ def ensure_data_ready(config: dict) -> tuple:
     existing = _find_existing_data(raw_dir, expected_name)
 
     if existing:
-        print(f"\n   ✅ 數據已存在: {existing}")
+        print(f"\n   [OK] 數據已存在: {existing}")
     else:
-        print(f"\n   ⚠️  數據不存在，開始下載...")
+        print(f"\n   [WARN] 數據不存在，開始下載...")
         existing = _download_data(symbol, start_date, end_date, raw_dir, expected_name, interval)
 
     # Step 2: 載入並分割
