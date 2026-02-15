@@ -141,7 +141,43 @@ reward = normalize_reward(reward)  # 穩定 critic target
 
 ## 📊 訓練與評估
 
-### 數據準備
+### 數據管線（v0.5 增量架構）
+
+**核心設計**：增量下載 + 處理後數據快取，避免重複下載與重複計算特徵。
+
+**流程**：
+```
+config.yaml 日期範圍
+    ↓
+_scan_existing_raw_data()    → 掃描 data/raw/*.parquet
+    ↓
+_determine_missing_ranges()  → 比較已有 vs 需求，找出缺口
+    ↓
+_download_and_merge()        → 僅下載缺少部分，合併為單一 parquet
+    ↓
+_ensure_processed_data()     → 檢查 data/processed/ 快取（data_hash + feature_config_hash）
+    ↓                          快取命中 → 直接載入；未命中 → 計算 20 ICT 特徵
+ensure_data_ready()          → 按 test_start_date 分割 train/test
+```
+
+**關鍵 API**（`utils/data_pipeline.py`）：
+| 函式 | 用途 | 使用者 |
+|------|------|--------|
+| `ensure_data_ready(config)` | 返回 `(train_df, test_df)`，含 OHLCV + 20 特徵 | `train.py`, `run_backtest.py` |
+| `load_full_data(config)` | 返回完整 DataFrame（不分割） | `wfa.py` |
+| `extract_features(df)` | 從 DataFrame 提取 `np.ndarray [n, 20]` | `train.py`, `wfa.py` |
+
+**處理後資料格式**：
+- 檔案：`data/processed/BTCUSDT_1m.parquet`（~150-200 MB）
+- 欄位：`timestamp` + 6 OHLCV + 20 ICT 特徵 = 27 欄
+- 快取驗證：`data/processed/BTCUSDT_1m.meta.json`（data_hash + feature_config_hash）
+
+**增量下載行為**：
+- 延長 `end_date` 5 天 → 僅下載缺少的 5 天數據
+- 第二次執行相同配置 → 直接從處理後快取載入（秒級啟動）
+- 變更 `features:` 配置 → 自動重新計算特徵（原始數據不重下載）
+
+**數據概況**：
 - **數據來源**：Binance Futures API (永續合約)
 - **訓練數據**：5 個月歷史數據（~216,000 根 1分K）
 - **測試數據**：1 個月回測數據（~43,200 根 1分K）
@@ -345,9 +381,10 @@ PPO_TradingModel/
 ├── requirements.txt               # Python 依賴
 │
 ├── data/                          # 數據目錄
-│   ├── raw/                       # 原始下載數據
-│   ├── processed/                 # 預處理後數據
-│   └── download_data.py           # 數據下載腳本
+│   ├── raw/                       # 原始 OHLCV parquet（增量下載管理）
+│   ├── processed/                 # 處理後數據（OHLCV + 20 ICT 特徵 parquet + meta.json）
+│   ├── cache/                     # 舊版特徵快取（feature_cache.py 使用，strategy.py fallback）
+│   └── download_data.py           # Binance API 數據下載器
 │
 ├── environment/                   # Gymnasium 環境
 │   ├── __init__.py
@@ -373,6 +410,8 @@ PPO_TradingModel/
 │
 ├── utils/                         # 工具函數
 │   ├── __init__.py
+│   ├── data_pipeline.py           # 數據管線（增量下載 + 處理後快取，核心 API）
+│   ├── feature_cache.py           # 舊版特徵快取（strategy.py fallback 仍使用）
 │   ├── logger.py                  # 日誌系統
 │   └── visualization.py           # 視覺化工具
 │
@@ -399,6 +438,7 @@ PPO_TradingModel/
 │           └── metrics.json       # 評估指標摘要
 │
 ├── train.py                       # 訓練入口腳本
+├── wfa.py                         # Walk Forward Analysis（滾動窗口驗證）
 ├── evaluate.py                    # 評估入口腳本
 └── config.yaml                    # 全局配置文件
 ```
@@ -469,6 +509,16 @@ PPO_TradingModel/
 
 ## 📝 版本記錄
 
+- **v0.5** (2026-02-16): 數據管線重寫（增量下載 + 處理後數據快取）
+  - ✅ 重寫 `utils/data_pipeline.py`：增量下載架構，僅補足缺少的日期範圍
+  - ✅ 新增處理後數據快取：`data/processed/{symbol}_{interval}.parquet`（OHLCV + 20 特徵）
+  - ✅ 快取驗證機制：透過 `data_hash` + `feature_config_hash` 自動判斷是否需要重算
+  - ✅ 新增公開 API：`load_full_data()`, `extract_features()`
+  - ✅ 更新 `train.py`：改用 `extract_features()` 取代 `precompute_features_with_cache()`
+  - ✅ 更新 `wfa.py`：`load_full_dataset()` 委派給 `load_full_data()`，移除舊版直接存取
+  - ✅ 更新 `backtest/run_backtest.py`：移除 `_build_expected_filename` 依賴
+  - ✅ 碎片整合：多個 raw parquet 自動合併為單一檔案，舊碎片自動清理
+
 - **v0.4** (2026-02-14): v9.0 綜合改進（程式碼深度分析 + 訓練數據診斷）
   - ✅ 修復 `vf_coef` 2.0→0.5（SB3 默認值，value loss 不再主導梯度）
   - ✅ 重新啟用 EMA reward normalization（穩定 critic target）
@@ -511,4 +561,4 @@ PPO_TradingModel/
 
 ---
 
-*最後更新：2026-02-14*
+*最後更新：2026-02-16*

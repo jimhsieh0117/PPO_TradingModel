@@ -95,18 +95,12 @@ def create_training_env(df: pd.DataFrame, config: dict):
     if seed is not None:
         set_random_seed(seed)
 
-    # === 優化：預計算特徵（帶硬碟緩存，只計算一次）===
-    # 數據未變更時直接從緩存讀取，大幅減少啟動時間
-    print("\n[train.py] Loading/computing features with disk cache...")
-    from utils.feature_cache import precompute_features_with_cache
+    # === 從 pipeline 返回的 DataFrame 中提取預計算特徵 ===
+    from utils.data_pipeline import extract_features
 
-    precomputed_features = precompute_features_with_cache(
-        df=df,
-        config=config.get('features', {}),
-        cache_dir="data/cache",
-        verbose=True
-    )
-    print(f"[train.py] Feature cache shape: {precomputed_features.shape}")
+    print("\n[train.py] Extracting pre-computed features from pipeline data...")
+    precomputed_features = extract_features(df)
+    print(f"[train.py] Feature shape: {precomputed_features.shape}")
 
     def make_env(rank: int):
         def _init():

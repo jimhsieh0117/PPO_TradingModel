@@ -50,11 +50,10 @@ def load_test_data(config: Dict, data_path: Optional[str]) -> Tuple[pd.DataFrame
         df = df.sort_index()
         return df, path
 
-    # 使用 data pipeline 自動取得測試數據
-    from utils.data_pipeline import ensure_data_ready, _build_expected_filename
+    # 使用 data pipeline 自動取得測試數據（含 OHLCV + 特徵）
+    from utils.data_pipeline import ensure_data_ready
 
     data_config = config.get("data", {})
-    trading_config = config.get("trading", {})
     _train_df, test_df = ensure_data_ready(config)
 
     # test_df 來自 pipeline，timestamp 是列不是索引
@@ -63,14 +62,11 @@ def load_test_data(config: Dict, data_path: Optional[str]) -> Tuple[pd.DataFrame
         test_df = test_df.set_index("timestamp")
     test_df = test_df.sort_index()
 
-    # 構造虛擬路徑用於日誌顯示
-    expected_name = _build_expected_filename(
-        data_config.get("symbol", "BTCUSDT"),
-        data_config.get("start_date", "2020-01-01 00:00:00"),
-        data_config.get("end_date", "2025-12-31 23:59:59"),
-        trading_config.get("timeframe", "1m"),
-    )
-    path = Path(data_config.get("raw_data_dir", "data/raw")) / expected_name
+    # 使用處理後資料路徑作為日誌顯示
+    processed_dir = Path(data_config.get("processed_data_dir", "data/processed"))
+    symbol = data_config.get("symbol", "BTCUSDT")
+    interval = config.get("trading", {}).get("timeframe", "1m")
+    path = processed_dir / f"{symbol}_{interval}.parquet"
 
     return test_df, path
 

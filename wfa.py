@@ -47,40 +47,13 @@ def load_config(config_path: str = "config.yaml") -> dict:
 # ---------------------------------------------------------------------------
 
 def load_full_dataset(config: dict) -> pd.DataFrame:
-    """Load the full raw dataset as a single DataFrame (no train/test split)."""
-    from utils.data_pipeline import (
-        _build_expected_filename,
-        _find_existing_data,
-        _download_data,
-    )
+    """Load the full dataset (with features) as a single DataFrame.
 
-    data_config = config.get("data", {})
-    trading_config = config.get("trading", {})
-
-    symbol = data_config.get("symbol", trading_config.get("symbol", "BTCUSDT"))
-    interval = trading_config.get("timeframe", "1m")
-    start_date = data_config.get("start_date", "2020-01-01 00:00:00")
-    end_date = data_config.get("end_date", "2026-02-11 23:59:59")
-    raw_dir = Path(data_config.get("raw_data_dir", "data/raw"))
-    raw_dir.mkdir(parents=True, exist_ok=True)
-
-    expected_name = _build_expected_filename(symbol, start_date, end_date, interval)
-    existing = _find_existing_data(raw_dir, expected_name)
-
-    if not existing:
-        print("   Data not found, downloading...")
-        existing = _download_data(
-            symbol, start_date, end_date, raw_dir, expected_name, interval
-        )
-
-    if str(existing).endswith(".parquet"):
-        df = pd.read_parquet(existing)
-    else:
-        df = pd.read_csv(existing)
-
-    if "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-    return df
+    Delegates to data_pipeline.load_full_data() which handles incremental
+    download and processed-data caching.
+    """
+    from utils.data_pipeline import load_full_data
+    return load_full_data(config)
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +261,7 @@ def _run_single_fold(args: tuple) -> Dict:
             commission=base_comm + slippage,
             trade_on_close=True,
             exclusive_orders=True,
+            finalize_trades=True,
         )
         stats = bt.run()
         trades = stats.get("_trades", pd.DataFrame())
@@ -342,16 +316,20 @@ def aggregate_results(
             "completed_folds": 0,
         }
 
-    returns = [m["total_return_pct"] for m in ok]
-    sharpes = [m["sharpe_ratio"] for m in ok]
-    drawdowns = [m["max_drawdown_pct"] for m in ok]
-    win_rates = [m["win_rate_pct"] for m in ok]
-    trades_per_day = [m.get("avg_trades_per_day", 0) for m in ok]
+    def _safe(vals):
+        """Filter out NaN/None values."""
+        return [v for v in vals if v is not None and not np.isnan(v)]
+
+    returns = _safe([m.get("total_return_pct", 0) for m in ok])
+    sharpes = _safe([m.get("sharpe_ratio", 0) for m in ok])
+    drawdowns = _safe([m.get("max_drawdown_pct", 0) for m in ok])
+    win_rates = _safe([m.get("win_rate_pct", 0) for m in ok])
+    trades_per_day = _safe([m.get("avg_trades_per_day", 0) for m in ok])
 
     profitable = sum(1 for r in returns if r > 0)
-    profitable_ratio = profitable / len(ok)
-    avg_sharpe = float(np.mean(sharpes))
-    worst_dd = float(min(drawdowns))
+    profitable_ratio = profitable / len(ok) if ok else 0
+    avg_sharpe = float(np.mean(sharpes)) if sharpes else 0.0
+    worst_dd = float(min(drawdowns)) if drawdowns else 0.0
 
     # Criteria checks
     min_ratio = criteria.get("min_profitable_folds_ratio", 0.67)
@@ -521,16 +499,11 @@ def main() -> None:
     data_end = full_df["timestamp"].max()
     print(f"      {len(full_df):,} bars  |  {data_start} ~ {data_end}")
 
-    # ---- 2. Compute features for full dataset (ONCE) ----
-    print("\n[2/5] Computing features for full dataset (one-time cost)...")
-    from utils.feature_cache import precompute_features_with_cache
+    # ---- 2. Extract pre-computed features from pipeline data ----
+    print("\n[2/5] Extracting pre-computed features...")
+    from utils.data_pipeline import extract_features
 
-    full_features = precompute_features_with_cache(
-        df=full_df,
-        config=config.get("features", {}),
-        cache_dir="data/cache",
-        verbose=True,
-    )
+    full_features = extract_features(full_df)
     print(f"      Feature shape: {full_features.shape}")
 
     # ---- 3. Generate fold schedule ----
@@ -584,11 +557,16 @@ def main() -> None:
     fold_metrics: List[Dict] = []
     t0 = time.time()
 
+    from tqdm import tqdm
+
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
             executor.submit(_run_single_fold, wa): wa[0]["fold_id"]
             for wa in worker_args
         }
+
+        pbar = tqdm(total=len(folds), desc="WFA Folds", unit="fold",
+                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
 
         for future in as_completed(future_map):
             fid = future_map[future]
@@ -597,21 +575,31 @@ def main() -> None:
                 fold_metrics.append(result)
                 status = result.get("status", "error")
                 if status == "ok":
-                    ret = result["total_return_pct"]
-                    sr = result["sharpe_ratio"]
-                    wr = result["win_rate_pct"]
-                    print(f"  [OK] Fold {fid:>2}/{len(folds)}  "
-                          f"Return: {ret:>+7.2f}%  "
-                          f"Sharpe: {sr:>6.2f}  "
-                          f"WinRate: {wr:>5.1f}%")
+                    ret = result.get("total_return_pct", 0) or 0
+                    sr = result.get("sharpe_ratio", 0) or 0
+                    wr = result.get("win_rate_pct", 0) or 0
+                    # Replace NaN with 0 for display
+                    ret = 0.0 if np.isnan(ret) else ret
+                    sr = 0.0 if np.isnan(sr) else sr
+                    wr = 0.0 if np.isnan(wr) else wr
+                    pbar.set_postfix_str(
+                        f"Fold {fid:>2} {ret:>+.1f}% Sharpe={sr:.1f}")
+                    tqdm.write(
+                        f"  [OK] Fold {fid:>2}/{len(folds)}  "
+                        f"Return: {ret:>+7.2f}%  "
+                        f"Sharpe: {sr:>6.2f}  "
+                        f"WinRate: {wr:>5.1f}%")
                 else:
                     err = result.get("error", "unknown")
-                    print(f"  [ERR] Fold {fid:>2}/{len(folds)}  {err}")
+                    tqdm.write(f"  [ERR] Fold {fid:>2}/{len(folds)}  {err}")
             except Exception as exc:
-                print(f"  [ERR] Fold {fid:>2}/{len(folds)}  {exc}")
+                tqdm.write(f"  [ERR] Fold {fid:>2}/{len(folds)}  {exc}")
                 fold_metrics.append(
                     {"fold_id": fid, "status": "error", "error": str(exc)}
                 )
+            pbar.update(1)
+
+        pbar.close()
 
     elapsed = time.time() - t0
     print(f"\n      All folds finished in {elapsed:.1f}s"
