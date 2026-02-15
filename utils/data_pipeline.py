@@ -2,7 +2,7 @@
 數據管線模組 - 自動化數據檢查、下載、分割
 
 訓練前自動確保數據就緒：
-1. 檢查 data/raw 是否已有匹配日期範圍的 CSV
+1. 檢查 data/raw 是否已有匹配日期範圍的 Parquet 文件
 2. 若無 → 呼叫 BinanceDataDownloader 下載
 3. 按 test_start_date 分割 train/test
 4. 返回 (train_df, test_df)
@@ -28,17 +28,26 @@ def _build_expected_filename(symbol: str, start_date: str, end_date: str,
                              interval: str = "1m") -> str:
     """
     根據日期範圍生成預期的數據文件名（不含路徑）。
-    例如：BTCUSDT_1m_20200101_20251231.csv
+    例如：BTCUSDT_1m_20200101_20251231.parquet
     """
     start_tag = _date_to_tag(start_date)
     end_tag = _date_to_tag(end_date)
-    return f"{symbol}_{interval}_{start_tag}_{end_tag}.csv"
+    return f"{symbol}_{interval}_{start_tag}_{end_tag}.parquet"
 
 
 def _find_existing_data(raw_dir: Path, expected_name: str) -> Path | None:
-    """檢查是否已存在完整數據文件"""
+    """檢查是否已存在完整數據文件（優先 Parquet，兼容舊 CSV）"""
     full_path = raw_dir / expected_name
     if full_path.exists() and full_path.stat().st_size > 0:
+        return full_path
+    # 向後兼容：檢查是否有舊的 CSV 版本
+    csv_name = expected_name.replace('.parquet', '.csv')
+    csv_path = raw_dir / csv_name
+    if csv_path.exists() and csv_path.stat().st_size > 0:
+        print(f"   ℹ️  找到舊版 CSV: {csv_name}，將轉換為 Parquet...")
+        df = pd.read_csv(csv_path)
+        df.to_parquet(full_path, index=False)
+        print(f"   ✅ 已轉換為: {expected_name}")
         return full_path
     return None
 
@@ -66,23 +75,26 @@ def _download_data(symbol: str, start_date: str, end_date: str, raw_dir: Path,
     downloader.validate_data(full_df)
     downloader.generate_summary(full_df)
 
-    # 保存（使用日期範圍命名，方便識別）
+    # 保存為 Parquet（壓縮 + 快速讀取）
     save_path = raw_dir / expected_name
-    full_df.to_csv(save_path)
-    print(f"   💾 數據已保存: {save_path}")
+    full_df.to_parquet(save_path, index=False)
+    print(f"   💾 數據已保存 (Parquet): {save_path}")
 
     return save_path
 
 
 def _load_and_split(data_path: Path, test_start_date: str) -> tuple:
     """
-    載入 CSV 並按日期分割 train/test。
+    載入數據（Parquet 或 CSV）並按日期分割 train/test。
 
     Returns:
         (train_df, test_df)
     """
     print(f"\n[DATA] 載入數據: {data_path}")
-    df = pd.read_csv(data_path)
+    if str(data_path).endswith('.parquet'):
+        df = pd.read_parquet(data_path)
+    else:
+        df = pd.read_csv(data_path)
 
     # 確保 timestamp 列存在
     if 'timestamp' in df.columns:

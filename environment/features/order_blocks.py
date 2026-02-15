@@ -43,7 +43,9 @@ class OrderBlockDetector:
 
     def precompute_all_features(self, df: pd.DataFrame) -> None:
         """
-        向量化預計算整個數據集的 Order Block 特徵
+        預計算整個數據集的 Order Block 特徵
+
+        優化版：使用前向指標 + 活躍窗口，時間複雜度 O(n)
 
         Args:
             df: OHLC 數據
@@ -64,64 +66,63 @@ class OrderBlockDetector:
         swing_high_mask, swing_low_mask = self._vectorized_swing_points(highs, lows)
 
         # 2. 識別看跌/看漲 K 線
-        bearish_candle = closes < opens  # 看跌 K 線
-        bullish_candle = closes > opens  # 看漲 K 線
+        bearish_candle = closes < opens
+        bullish_candle = closes > opens
 
         # 3. 計算 K 線大小
         candle_size = (highs - lows) / np.where(lows > 0, lows, 1)
         valid_size = candle_size >= self.min_size_pct
 
-        # 4. 找到所有 Order Blocks
-        # 看漲 OB: swing low 之前的看跌 K 線
-        # 看跌 OB: swing high 之前的看漲 K 線
-        bullish_ob_highs = []  # [(idx, high, low), ...]
-        bearish_ob_highs = []
+        # 4. 找到所有 OBs（按時間排序，O(S) 其中 S = swing points 數量）
+        bullish_obs = []  # [(idx, high, low), ...] 已按 idx 排序
+        bearish_obs = []
 
         swing_low_indices = np.where(swing_low_mask)[0]
         swing_high_indices = np.where(swing_high_mask)[0]
 
-        # 找看漲 OB（在 swing low 之前）
         for swing_idx in swing_low_indices:
             for i in range(swing_idx - 1, max(0, swing_idx - 10), -1):
                 if bearish_candle[i] and valid_size[i]:
-                    bullish_ob_highs.append((i, highs[i], lows[i]))
+                    bullish_obs.append((i, highs[i], lows[i]))
                     break
 
-        # 找看跌 OB（在 swing high 之前）
         for swing_idx in swing_high_indices:
             for i in range(swing_idx - 1, max(0, swing_idx - 10), -1):
                 if bullish_candle[i] and valid_size[i]:
-                    bearish_ob_highs.append((i, highs[i], lows[i]))
+                    bearish_obs.append((i, highs[i], lows[i]))
                     break
 
-        # 5. 為每個位置計算特徵
+        # 5. O(n) 前向掃描：使用指標追蹤活躍 OB 窗口
+        max_ob_age = 500  # OB 最大有效期（500 根 K 線）
+
+        bull_ptr = 0  # 下一個要加入的 bullish OB 指標
+        bear_ptr = 0
+        active_bull = []  # 活躍的 bullish OBs（最多 max_ob_age 個）
+        active_bear = []
+
         for i in range(n):
             current_price = closes[i]
 
-            # 找最近的有效看漲 OB
-            nearest_bullish_dist = 10.0
-            in_bullish = 0
-            for ob_idx, ob_high, ob_low in bullish_ob_highs:
-                if ob_idx >= i:
-                    continue
-                # 計算距離
-                if current_price > ob_high:
-                    dist = (current_price - ob_high) / current_price * 100
-                elif current_price < ob_low:
-                    dist = (ob_low - current_price) / current_price * 100
-                else:
-                    dist = 0.0
-                    in_bullish = 1
-                if dist < nearest_bullish_dist:
-                    nearest_bullish_dist = dist
-                    if ob_low <= current_price <= ob_high:
-                        in_bullish = 1
+            # 加入新的 OB（已到達 i 之前的）
+            while bull_ptr < len(bullish_obs) and bullish_obs[bull_ptr][0] < i:
+                active_bull.append(bullish_obs[bull_ptr])
+                bull_ptr += 1
+            while bear_ptr < len(bearish_obs) and bearish_obs[bear_ptr][0] < i:
+                active_bear.append(bearish_obs[bear_ptr])
+                bear_ptr += 1
 
-            # 找最近的有效看跌 OB
-            nearest_bearish_dist = 10.0
-            in_bearish = 0
-            for ob_idx, ob_high, ob_low in bearish_ob_highs:
-                if ob_idx >= i:
+            # 清理過期 OB（每 1000 步清理一次，攤銷 O(1)）
+            if i % 1000 == 0:
+                cutoff = i - max_ob_age
+                active_bull = [(idx, h, l) for idx, h, l in active_bull if idx >= cutoff]
+                active_bear = [(idx, h, l) for idx, h, l in active_bear if idx >= cutoff]
+
+            # 找最近的 bullish OB（只掃活躍列表，O(max_ob_age) ≈ 常數）
+            nearest_bull_dist = 10.0
+            in_bull = 0
+            cutoff_i = i - max_ob_age
+            for ob_idx, ob_high, ob_low in active_bull:
+                if ob_idx < cutoff_i:
                     continue
                 if current_price > ob_high:
                     dist = (current_price - ob_high) / current_price * 100
@@ -129,16 +130,34 @@ class OrderBlockDetector:
                     dist = (ob_low - current_price) / current_price * 100
                 else:
                     dist = 0.0
-                    in_bearish = 1
-                if dist < nearest_bearish_dist:
-                    nearest_bearish_dist = dist
+                    in_bull = 1
+                if dist < nearest_bull_dist:
+                    nearest_bull_dist = dist
                     if ob_low <= current_price <= ob_high:
-                        in_bearish = 1
+                        in_bull = 1
 
-            self._dist_bullish_cache[i] = nearest_bullish_dist
-            self._dist_bearish_cache[i] = nearest_bearish_dist
-            self._in_bullish_cache[i] = in_bullish
-            self._in_bearish_cache[i] = in_bearish
+            # 找最近的 bearish OB
+            nearest_bear_dist = 10.0
+            in_bear = 0
+            for ob_idx, ob_high, ob_low in active_bear:
+                if ob_idx < cutoff_i:
+                    continue
+                if current_price > ob_high:
+                    dist = (current_price - ob_high) / current_price * 100
+                elif current_price < ob_low:
+                    dist = (ob_low - current_price) / current_price * 100
+                else:
+                    dist = 0.0
+                    in_bear = 1
+                if dist < nearest_bear_dist:
+                    nearest_bear_dist = dist
+                    if ob_low <= current_price <= ob_high:
+                        in_bear = 1
+
+            self._dist_bullish_cache[i] = nearest_bull_dist
+            self._dist_bearish_cache[i] = nearest_bear_dist
+            self._in_bullish_cache[i] = in_bull
+            self._in_bearish_cache[i] = in_bear
 
         self._cache_valid = True
 

@@ -6,6 +6,7 @@ gymnasium>=0.29.0
 # === 數據處理 ===
 numpy>=1.24.0
 pandas>=2.0.0
+pyarrow>=14.0.0
 
 # === 加密貨幣數據獲取 ===
 binance-connector>=3.7.0

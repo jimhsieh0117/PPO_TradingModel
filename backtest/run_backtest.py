@@ -40,7 +40,10 @@ def load_test_data(config: Dict, data_path: Optional[str]) -> Tuple[pd.DataFrame
     # 如果明確指定了 data_path，直接使用
     if data_path:
         path = Path(data_path)
-        df = pd.read_csv(path)
+        if str(path).endswith('.parquet'):
+            df = pd.read_parquet(path)
+        else:
+            df = pd.read_csv(path)
         if "timestamp" in df.columns:
             df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
             df = df.set_index("timestamp")
@@ -51,6 +54,7 @@ def load_test_data(config: Dict, data_path: Optional[str]) -> Tuple[pd.DataFrame
     from utils.data_pipeline import ensure_data_ready, _build_expected_filename
 
     data_config = config.get("data", {})
+    trading_config = config.get("trading", {})
     _train_df, test_df = ensure_data_ready(config)
 
     # test_df 來自 pipeline，timestamp 是列不是索引
@@ -64,6 +68,7 @@ def load_test_data(config: Dict, data_path: Optional[str]) -> Tuple[pd.DataFrame
         data_config.get("symbol", "BTCUSDT"),
         data_config.get("start_date", "2020-01-01 00:00:00"),
         data_config.get("end_date", "2025-12-31 23:59:59"),
+        trading_config.get("timeframe", "1m"),
     )
     path = Path(data_config.get("raw_data_dir", "data/raw")) / expected_name
 

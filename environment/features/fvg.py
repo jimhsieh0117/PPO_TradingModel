@@ -42,11 +42,15 @@ class FVGDetector:
 
     def precompute_all_features(self, df: pd.DataFrame) -> None:
         """
-        向量化預計算整個數據集的 FVG 特徵
+        預計算整個數據集的 FVG 特徵
+
+        優化版：使用活躍 FVG 清單 + 過期清理，時間複雜度 O(n)
 
         Args:
             df: OHLC 數據
         """
+        from collections import deque
+
         n = len(df)
         highs = df['high'].to_numpy(dtype=np.float64)
         lows = df['low'].to_numpy(dtype=np.float64)
@@ -57,100 +61,114 @@ class FVGDetector:
         self._in_bearish_cache = np.zeros(n, dtype=np.int8)
         self._nearest_dir_cache = np.zeros(n, dtype=np.int8)
 
-        # 1. 向量化檢測所有 FVG
-        # 看漲 FVG: highs[i] < lows[i+2]
+        # 1. 向量化檢測所有 FVG 位置
+        # 看漲 FVG: highs[i] < lows[i+2]，且大小 >= min_size_pct
         # 看跌 FVG: lows[i] > highs[i+2]
-        bullish_fvg_list = []  # [(start_idx, high, low), ...]
-        bearish_fvg_list = []
+        bull_fvg_indices = []  # [(start_idx, high=lows[i+2], low=highs[i]), ...]
+        bear_fvg_indices = []
 
-        for i in range(n - 2):
-            # 看漲 FVG
-            if highs[i] < lows[i + 2]:
-                gap_size = (lows[i + 2] - highs[i]) / highs[i]
-                if gap_size >= self.min_size_pct:
-                    bullish_fvg_list.append((i, lows[i + 2], highs[i]))  # (idx, high, low)
+        if n > 2:
+            h_shifted = highs[:-2]
+            l_shifted = lows[2:]
+            bull_mask = h_shifted < l_shifted
+            gap_size_bull = (l_shifted - h_shifted) / np.where(h_shifted > 0, h_shifted, 1.0)
+            bull_mask &= gap_size_bull >= self.min_size_pct
 
-            # 看跌 FVG
-            if lows[i] > highs[i + 2]:
-                gap_size = (lows[i] - highs[i + 2]) / highs[i + 2]
-                if gap_size >= self.min_size_pct:
-                    bearish_fvg_list.append((i, lows[i], highs[i + 2]))  # (idx, high, low)
+            l_first = lows[:-2]
+            h_third = highs[2:]
+            bear_mask = l_first > h_third
+            gap_size_bear = (l_first - h_third) / np.where(h_third > 0, h_third, 1.0)
+            bear_mask &= gap_size_bear >= self.min_size_pct
 
-        # 2. 追蹤 FVG 填補狀態並計算每個位置的特徵
-        bullish_filled = [False] * len(bullish_fvg_list)
-        bearish_filled = [False] * len(bearish_fvg_list)
+            for idx in np.where(bull_mask)[0]:
+                bull_fvg_indices.append((idx, lows[idx + 2], highs[idx]))
+            for idx in np.where(bear_mask)[0]:
+                bear_fvg_indices.append((idx, lows[idx], highs[idx + 2]))
+
+        # 2. O(n) 前向掃描：維護活躍（未填補）FVG deque
+        bull_ptr = 0
+        bear_ptr = 0
+        active_bull = deque()  # (start_idx, high, low)
+        active_bear = deque()
 
         for i in range(n):
             current_price = closes[i]
             current_high = highs[i]
             current_low = lows[i]
 
-            # 更新 FVG 填補狀態
-            for j, (start_idx, fvg_high, fvg_low) in enumerate(bullish_fvg_list):
-                if not bullish_filled[j] and i > start_idx + 2:
-                    # 看漲 FVG 被填補: 價格回落到 FVG 區域
-                    if current_low <= fvg_high:
-                        bullish_filled[j] = True
+            # 加入新的 FVG（已形成的，i > start_idx + 2）
+            while bull_ptr < len(bull_fvg_indices) and bull_fvg_indices[bull_ptr][0] + 2 <= i:
+                active_bull.append(bull_fvg_indices[bull_ptr])
+                bull_ptr += 1
+            while bear_ptr < len(bear_fvg_indices) and bear_fvg_indices[bear_ptr][0] + 2 <= i:
+                active_bear.append(bear_fvg_indices[bear_ptr])
+                bear_ptr += 1
 
-            for j, (start_idx, fvg_high, fvg_low) in enumerate(bearish_fvg_list):
-                if not bearish_filled[j] and i > start_idx + 2:
-                    # 看跌 FVG 被填補: 價格回升到 FVG 區域
-                    if current_high >= fvg_low:
-                        bearish_filled[j] = True
+            # 清理：移除已過期的 FVG（從左邊移除，deque 前端是最舊的）
+            while active_bull and i - active_bull[0][0] > self.max_age:
+                active_bull.popleft()
+            while active_bear and i - active_bear[0][0] > self.max_age:
+                active_bear.popleft()
+
+            # 清理：移除已填補的 FVG（標記後批量清理）
+            # 看漲 FVG 被填補: 價格回落到 FVG 區域 (current_low <= fvg_high)
+            # 看跌 FVG 被填補: 價格回升到 FVG 區域 (current_high >= fvg_low)
+            new_bull = deque()
+            for item in active_bull:
+                start_idx, fvg_high, fvg_low = item
+                if current_low <= fvg_high:  # 填補了
+                    continue
+                new_bull.append(item)
+            active_bull = new_bull
+
+            new_bear = deque()
+            for item in active_bear:
+                start_idx, fvg_high, fvg_low = item
+                if current_high >= fvg_low:  # 填補了
+                    continue
+                new_bear.append(item)
+            active_bear = new_bear
 
             # 找最近的未填補 FVG
-            nearest_bullish = None
-            nearest_bullish_dist = float('inf')
-            for j, (start_idx, fvg_high, fvg_low) in enumerate(bullish_fvg_list):
-                if bullish_filled[j]:
-                    continue
-                if start_idx >= i:
-                    continue
-                if i - start_idx > self.max_age:
-                    continue
+            nearest_bull = None
+            nearest_bull_dist = float('inf')
+            for start_idx, fvg_high, fvg_low in active_bull:
                 mid = (fvg_high + fvg_low) / 2
                 dist = abs(current_price - mid)
-                if dist < nearest_bullish_dist:
-                    nearest_bullish_dist = dist
-                    nearest_bullish = (fvg_high, fvg_low)
+                if dist < nearest_bull_dist:
+                    nearest_bull_dist = dist
+                    nearest_bull = (fvg_high, fvg_low)
 
-            nearest_bearish = None
-            nearest_bearish_dist = float('inf')
-            for j, (start_idx, fvg_high, fvg_low) in enumerate(bearish_fvg_list):
-                if bearish_filled[j]:
-                    continue
-                if start_idx >= i:
-                    continue
-                if i - start_idx > self.max_age:
-                    continue
+            nearest_bear = None
+            nearest_bear_dist = float('inf')
+            for start_idx, fvg_high, fvg_low in active_bear:
                 mid = (fvg_high + fvg_low) / 2
                 dist = abs(current_price - mid)
-                if dist < nearest_bearish_dist:
-                    nearest_bearish_dist = dist
-                    nearest_bearish = (fvg_high, fvg_low)
+                if dist < nearest_bear_dist:
+                    nearest_bear_dist = dist
+                    nearest_bear = (fvg_high, fvg_low)
 
             # 計算特徵
             in_bullish = 0
             in_bearish = 0
             nearest_dir = 0
 
-            if nearest_bullish:
-                fvg_high, fvg_low = nearest_bullish
+            if nearest_bull:
+                fvg_high, fvg_low = nearest_bull
                 if fvg_low <= current_price <= fvg_high:
                     in_bullish = 1
 
-            if nearest_bearish:
-                fvg_high, fvg_low = nearest_bearish
+            if nearest_bear:
+                fvg_high, fvg_low = nearest_bear
                 if fvg_low <= current_price <= fvg_high:
                     in_bearish = 1
 
-            # 確定最近 FVG 方向
-            if nearest_bullish and not nearest_bearish:
+            if nearest_bull and not nearest_bear:
                 nearest_dir = 1
-            elif nearest_bearish and not nearest_bullish:
+            elif nearest_bear and not nearest_bull:
                 nearest_dir = -1
-            elif nearest_bullish and nearest_bearish:
-                nearest_dir = 1 if nearest_bullish_dist < nearest_bearish_dist else -1
+            elif nearest_bull and nearest_bear:
+                nearest_dir = 1 if nearest_bull_dist < nearest_bear_dist else -1
 
             self._in_bullish_cache[i] = in_bullish
             self._in_bearish_cache[i] = in_bearish

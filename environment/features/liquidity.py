@@ -44,7 +44,9 @@ class LiquidityDetector:
 
     def precompute_all_features(self, df: pd.DataFrame) -> None:
         """
-        向量化預計算整個數據集的流動性特徵
+        預計算整個數據集的流動性特徵
+
+        優化版：使用活躍 swing point 窗口 + 掃蕩移除，時間複雜度 O(n)
 
         Args:
             df: OHLC 數據
@@ -63,69 +65,88 @@ class LiquidityDetector:
         swing_high_mask, swing_low_mask, swing_high_prices, swing_low_prices = \
             self._vectorized_swing_points(highs, lows)
 
-        swing_high_indices = np.where(swing_high_mask)[0]
-        swing_low_indices = np.where(swing_low_mask)[0]
+        # 排序的 swing point 列表（按 idx 排序）
+        sh_indices = np.where(swing_high_mask)[0]  # swing high 的位置
+        sl_indices = np.where(swing_low_mask)[0]    # swing low 的位置
 
-        # 2. 追蹤流動性掃蕩和計算特徵
-        high_swept = np.zeros(len(swing_high_indices), dtype=bool)
-        low_swept = np.zeros(len(swing_low_indices), dtype=bool)
+        # 2. O(n) 前向掃描：維護活躍 swing point 窗口
+        max_liq_age = 500  # 流動性最大有效期
+
+        sh_ptr = 0  # 下一個要加入的 swing high 指標
+        sl_ptr = 0
+        # 活躍的 swing points: {idx: price}
+        active_highs = {}  # 上方流動性（未掃蕩的 swing highs）
+        active_lows = {}   # 下方流動性（未掃蕩的 swing lows）
 
         for i in range(n):
             current_price = closes[i]
             current_high = highs[i]
             current_low = lows[i]
 
-            # 檢測並更新流動性掃蕩
-            sweep_detected = False
+            # 加入新的 swing points
+            while sh_ptr < len(sh_indices) and sh_indices[sh_ptr] < i:
+                idx = sh_indices[sh_ptr]
+                active_highs[idx] = swing_high_prices[idx]
+                sh_ptr += 1
+            while sl_ptr < len(sl_indices) and sl_indices[sl_ptr] < i:
+                idx = sl_indices[sl_ptr]
+                active_lows[idx] = swing_low_prices[idx]
+                sl_ptr += 1
 
-            # 檢查上方流動性掃蕩
-            for j, swing_idx in enumerate(swing_high_indices):
-                if high_swept[j] or swing_idx >= i:
+            # 清理過期（每 500 步批量清理，攤銷 O(1)）
+            if i % 500 == 0:
+                cutoff = i - max_liq_age
+                active_highs = {k: v for k, v in active_highs.items() if k >= cutoff}
+                active_lows = {k: v for k, v in active_lows.items() if k >= cutoff}
+
+            # 檢測掃蕩 + 找最近流動性（同時進行）
+            sweep_detected = False
+            nearest_above_dist = 5.0
+            nearest_below_dist = 5.0
+
+            cutoff_i = i - max_liq_age
+            swept_highs = []
+            swept_lows = []
+
+            # 掃描上方流動性
+            for idx, swing_price in active_highs.items():
+                if idx < cutoff_i:
                     continue
-                swing_price = swing_high_prices[swing_idx]
-                # 突破流動性且快速反轉
+                # 檢測掃蕩：突破流動性且反轉
                 if current_high > swing_price * (1 + self.sweep_threshold):
                     if current_price < swing_price:
-                        high_swept[j] = True
+                        swept_highs.append(idx)
                         sweep_detected = True
-
-            # 檢查下方流動性掃蕩
-            for j, swing_idx in enumerate(swing_low_indices):
-                if low_swept[j] or swing_idx >= i:
-                    continue
-                swing_price = swing_low_prices[swing_idx]
-                # 突破流動性且快速反轉
-                if current_low < swing_price * (1 - self.sweep_threshold):
-                    if current_price > swing_price:
-                        low_swept[j] = True
-                        sweep_detected = True
-
-            self._liq_sweep_cache[i] = 1 if sweep_detected else 0
-
-            # 找最近的上方流動性（未掃蕩的 swing high > current_price）
-            nearest_above_dist = 5.0
-            for j, swing_idx in enumerate(swing_high_indices):
-                if high_swept[j] or swing_idx >= i:
-                    continue
-                swing_price = swing_high_prices[swing_idx]
+                        continue
+                # 計算上方距離
                 if swing_price > current_price:
                     dist = (swing_price - current_price) / current_price * 100
                     if dist < nearest_above_dist:
                         nearest_above_dist = dist
 
-            # 找最近的下方流動性（未掃蕩的 swing low < current_price）
-            nearest_below_dist = 5.0
-            for j, swing_idx in enumerate(swing_low_indices):
-                if low_swept[j] or swing_idx >= i:
+            # 掃描下方流動性
+            for idx, swing_price in active_lows.items():
+                if idx < cutoff_i:
                     continue
-                swing_price = swing_low_prices[swing_idx]
+                if current_low < swing_price * (1 - self.sweep_threshold):
+                    if current_price > swing_price:
+                        swept_lows.append(idx)
+                        sweep_detected = True
+                        continue
                 if swing_price < current_price:
                     dist = (current_price - swing_price) / current_price * 100
                     if dist < nearest_below_dist:
                         nearest_below_dist = dist
 
+            # 移除已掃蕩的 swing points
+            for idx in swept_highs:
+                active_highs.pop(idx, None)
+            for idx in swept_lows:
+                active_lows.pop(idx, None)
+
             self._liq_above_cache[i] = nearest_above_dist
             self._liq_below_cache[i] = nearest_below_dist
+            self._liq_sweep_cache[i] = 1 if sweep_detected else 0
 
         self._cache_valid = True
 

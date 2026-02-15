@@ -272,35 +272,35 @@ class BinanceDataDownloader:
 
     def save_data(self, train_df, test_df, full_df):
         """
-        保存數據到 CSV 文件
+        保存數據到 Parquet 文件
 
         Args:
             train_df: 訓練集
             test_df: 測試集
             full_df: 完整數據集
         """
-        print(f"\n💾 保存數據...")
+        print(f"\n💾 保存數據 (Parquet 格式)...")
 
         # 生成文件名（帶時間戳）
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        train_file = self.raw_dir / f"{self.symbol}_{self.interval}_train_{timestamp}.csv"
-        test_file = self.raw_dir / f"{self.symbol}_{self.interval}_test_{timestamp}.csv"
-        full_file = self.raw_dir / f"{self.symbol}_{self.interval}_full_{timestamp}.csv"
+        train_file = self.raw_dir / f"{self.symbol}_{self.interval}_train_{timestamp}.parquet"
+        test_file = self.raw_dir / f"{self.symbol}_{self.interval}_test_{timestamp}.parquet"
+        full_file = self.raw_dir / f"{self.symbol}_{self.interval}_full_{timestamp}.parquet"
 
         # 保存
-        train_df.to_csv(train_file)
-        test_df.to_csv(test_file)
-        full_df.to_csv(full_file)
+        train_df.to_parquet(train_file, index=True)
+        test_df.to_parquet(test_file, index=True)
+        full_df.to_parquet(full_file, index=True)
 
         print(f"   ✅ 訓練集: {train_file}")
         print(f"   ✅ 測試集: {test_file}")
         print(f"   ✅ 完整數據: {full_file}")
 
         # 創建符號鏈接指向最新文件（方便使用）
-        latest_train = self.raw_dir / f"{self.symbol}_{self.interval}_train_latest.csv"
-        latest_test = self.raw_dir / f"{self.symbol}_{self.interval}_test_latest.csv"
-        latest_full = self.raw_dir / f"{self.symbol}_{self.interval}_full_latest.csv"
+        latest_train = self.raw_dir / f"{self.symbol}_{self.interval}_train_latest.parquet"
+        latest_test = self.raw_dir / f"{self.symbol}_{self.interval}_test_latest.parquet"
+        latest_full = self.raw_dir / f"{self.symbol}_{self.interval}_full_latest.parquet"
 
         # 刪除舊的符號鏈接（如果存在）
         for link in [latest_train, latest_test, latest_full]:
