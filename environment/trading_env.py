@@ -56,6 +56,7 @@ class TradingEnv(gym.Env):
         stop_loss_pct: float = 0.015,
         max_daily_drawdown: float = 0.10,
         trading_fee: float = 0.0004,
+        slippage: float = 0.0,
         episode_length: int = 1440,
         feature_config: Optional[Dict] = None,
         reward_config: Optional[Dict] = None,
@@ -99,6 +100,7 @@ class TradingEnv(gym.Env):
         self.stop_loss_pct = stop_loss_pct  # 1.5%
         self.max_daily_drawdown = max_daily_drawdown  # 10%
         self.trading_fee = trading_fee  # 0.04%
+        self.slippage = slippage  # 滑點（0.05% = 0.0005）
 
         # === 特徵提取器 ===
         self.feature_aggregator = FeatureAggregator(
@@ -458,9 +460,12 @@ class TradingEnv(gym.Env):
         # 計算實際購買數量（考慮槓桿）
         self.position_size = (position_value * self.leverage) / current_price
 
-        # 記錄開倉信息
+        # 記錄開倉信息（含滑點：買入成交價偏高，賣出成交價偏低）
         self.position = direction
-        self.entry_price = current_price
+        if direction == 1:  # 做多（買入）：成交價偏高
+            self.entry_price = current_price * (1 + self.slippage)
+        else:  # 做空（賣出）：成交價偏低
+            self.entry_price = current_price * (1 - self.slippage)
         self.holding_time = 0
 
         # 設置止損價格（1.5% 價格波動）
@@ -486,11 +491,14 @@ class TradingEnv(gym.Env):
         if self.position == 0:
             return
 
-        # 計算盈虧（考慮槓桿）
-        if self.position == 1:  # 平多倉
-            price_change_pct = (current_price - self.entry_price) / self.entry_price
-        else:  # 平空倉
-            price_change_pct = (self.entry_price - current_price) / self.entry_price
+        # 計算盈虧（考慮槓桿 + 滑點）
+        # 平多（賣出）：成交價偏低；平空（買入）：成交價偏高
+        if self.position == 1:  # 平多倉（賣出）
+            exit_price = current_price * (1 - self.slippage)
+            price_change_pct = (exit_price - self.entry_price) / self.entry_price
+        else:  # 平空倉（買入）
+            exit_price = current_price * (1 + self.slippage)
+            price_change_pct = (self.entry_price - exit_price) / self.entry_price
 
         # 實際盈虧 = 倉位價值 × 槓桿 × 價格變化百分比
         position_value = self.balance * self.position_size_pct

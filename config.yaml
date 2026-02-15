@@ -18,7 +18,7 @@ trading:
   # 交易成本
   taker_fee: 0.0004              # Taker 手續費（0.04%）- 啟用以訓練適應真實成本
   maker_fee: 0.000               # Maker 手續費（0.02%）
-  slippage: 0.0                   # 滑點（暫不模擬）
+  slippage: 0.0005                 # 滑點（0.05%，每次成交價格偏移）
 
 # ==================== 數據設定 ===================
 data:
@@ -38,11 +38,11 @@ ppo:
   device: "cpu"                  # 訓練設備：cpu 或 cuda（GPU）
 
   # 學習參數
-  learning_rate: 0.00015          # 學習率（v5: 0.0002 → 0.00015 穩定學習）
-  n_steps: 2048                   # 更新頻率（每 2048 steps 更新一次）- v8.1: 4096 → 2048 回退，CPU 上更快迭代
+  learning_rate: 0.0003          # 學習率（v5: 0.0002 → 0.00015 穩定學習）
+  n_steps: 4096                   # 更新頻率（每 2048 steps 更新一次）- v8.1: 4096 → 2048 回退，CPU 上更快迭代
   batch_size: 64                 # 批次大小（GPU 優化）
 
-  n_epochs: 8                      # 每次更新訓練的輪數（v8.1: 6 → 8 折中值）
+  n_epochs: 12                      # 每次更新訓練的輪數（v8.1: 6 → 8 折中值）
 
   # 折扣與優勢估計
   gamma: 0.95                     # 折扣因子（v8.1: 0.97 → 0.95 回退，減少 value target 方差）
@@ -51,8 +51,8 @@ ppo:
   # PPO 特定參數
   clip_range: 0.2                 # PPO Clip 範圍（v5: 0.23 → 0.2 標準值）
   clip_range_vf: null             # Value Function Clip（null = 不裁剪）
-  ent_coef: 0.2                    # 熵係數（v8.1: 0.1 → 0.2 恢復探索，避免過早收斂）
-  vf_coef: 0.5                    # Value Function 係數（v9: 2.0 → 0.5 恢復默認，避免 value loss 主導梯度）
+  ent_coef: 0.05                    # 熵係數（v8.1: 0.1 → 0.2 恢復探索，避免過早收斂）
+  vf_coef: 0.75                    # Value Function 係數（v9: 2.0 → 0.5 恢復默認，避免 value loss 主導梯度）
   max_grad_norm: 0.5              # 梯度裁剪
 
   # 神經網絡架構

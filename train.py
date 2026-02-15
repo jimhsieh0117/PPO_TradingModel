@@ -118,6 +118,7 @@ def create_training_env(df: pd.DataFrame, config: dict):
                 stop_loss_pct=trading_config.get('stop_loss_pct', 0.015),
                 max_daily_drawdown=trading_config.get('daily_drawdown_limit', 0.10),
                 trading_fee=trading_config.get('taker_fee', 0.0004),
+                slippage=trading_config.get('slippage', 0.0),
                 episode_length=training_config.get('episode_length', 1440),
                 feature_config=config.get('features', {}),
                 reward_config=config.get('reward', {}),

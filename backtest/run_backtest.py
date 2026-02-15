@@ -230,11 +230,17 @@ def main() -> None:
     PPOTradingStrategy.position_size_pct = float(trading_config.get("position_size_pct", 0.15))
     PPOTradingStrategy.stop_loss_pct = float(trading_config.get("stop_loss_pct", 0.015))
 
+    # 手續費 + 滑點（backtesting.py 的 commission 為百分比，與滑點單位一致）
+    base_commission = float(backtest_config.get("commission", 0.0004))
+    slippage = float(trading_config.get("slippage", 0.0))
+    effective_commission = base_commission + slippage
+    print(f"      Commission: {base_commission:.4%} + Slippage: {slippage:.4%} = {effective_commission:.4%}")
+
     bt = Backtest(
         bt_data,
         PPOTradingStrategy,
         cash=float(backtest_config.get("initial_capital", 10000)),
-        commission=float(backtest_config.get("commission", 0.0004)),
+        commission=effective_commission,
         trade_on_close=True,
         exclusive_orders=True,
     )
