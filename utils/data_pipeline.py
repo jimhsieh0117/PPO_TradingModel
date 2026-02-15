@@ -57,6 +57,11 @@ FEATURE_COLUMNS = [
     # Multi-Timeframe (2)
     'trend_5m',
     'trend_15m',
+    # Volatility (1)
+    'atr_normalized',
+    # Time (2)
+    'hour_sin',
+    'hour_cos',
 ]
 
 
@@ -249,8 +254,12 @@ def _compute_data_hash(df: pd.DataFrame) -> str:
 
 
 def _compute_config_hash(feature_config: dict) -> str:
-    """計算特徵配置哈希。"""
-    config_str = json.dumps(feature_config, sort_keys=True, default=str)
+    """計算特徵配置哈希（包含特徵列表版本，確保特徵變更時自動失效）。"""
+    combined = {
+        'config': feature_config,
+        'feature_columns': FEATURE_COLUMNS,
+    }
+    config_str = json.dumps(combined, sort_keys=True, default=str)
     return hashlib.md5(config_str.encode()).hexdigest()[:8]
 
 

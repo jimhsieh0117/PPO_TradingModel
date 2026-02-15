@@ -31,18 +31,13 @@ class TradingEnv(gym.Env):
         3: 持有 (Hold)
 
     觀察空間:
-        20 維 ICT 特徵向量
+        28 維 = 23 ICT 特徵 + 5 持倉狀態特徵
+        (20 原始 ICT + atr_normalized + hour_sin + hour_cos + 5 持倉)
 
-    獎勵設計 (v8.0):
-        - 主要：已實現盈虧（平倉時，權重 500）
-        - 輔助：微小浮動盈虧（每步，權重由 config 控制）
-        - 盈利交易品質獎勵（鼓勵讓利潤奔跑）
-        - 頻繁交易懲罰（抑制無效交易）
-        - 止損給予額外小懲罰
-        - 目的：讓 Value Network 能學到清晰的價值信號
-
-    觀察空間:
-        25 維 = 20 ICT 特徵 + 5 持倉狀態特徵
+    止損設計:
+        - ATR 動態止損（2x ATR 倍數，適應市場波動）
+        - 追蹤止損（止損價只朝有利方向移動，鎖住利潤）
+        - 固定百分比作為 ATR 不可用時的 fallback
     """
 
     metadata = {"render_modes": ["human"]}
@@ -60,7 +55,9 @@ class TradingEnv(gym.Env):
         episode_length: int = 1440,
         feature_config: Optional[Dict] = None,
         reward_config: Optional[Dict] = None,
-        precomputed_features: Optional[np.ndarray] = None
+        precomputed_features: Optional[np.ndarray] = None,
+        atr_stop_multiplier: float = 2.0,
+        trailing_stop: bool = True,
     ):
         """
         初始化交易環境
@@ -70,12 +67,14 @@ class TradingEnv(gym.Env):
             initial_balance: 初始資金（USDT）
             leverage: 槓桿倍數
             position_size_pct: 每次開倉使用的資金比例
-            stop_loss_pct: 止損百分比（價格波動）
+            stop_loss_pct: 止損百分比（ATR 不可用時的 fallback）
             max_daily_drawdown: 單日最大回撤限制
             trading_fee: 交易手續費（taker fee）
             episode_length: 每個 episode 的步數（1440 = 24小時）
             feature_config: 特徵檢測器配置
             reward_config: 獎勵函數配置
+            atr_stop_multiplier: ATR 止損倍數（預設 2.0）
+            trailing_stop: 是否啟用追蹤止損
         """
         super().__init__()
 
@@ -97,10 +96,15 @@ class TradingEnv(gym.Env):
         self.leverage = leverage
         self.position_size_pct = position_size_pct  # 15%
         self.actual_exposure_pct = position_size_pct * leverage  # 150%
-        self.stop_loss_pct = stop_loss_pct  # 1.5%
+        self.stop_loss_pct = stop_loss_pct  # 1.5%（ATR fallback）
         self.max_daily_drawdown = max_daily_drawdown  # 10%
         self.trading_fee = trading_fee  # 0.04%
         self.slippage = slippage  # 滑點（0.05% = 0.0005）
+
+        # === ATR 動態止損 + 追蹤止損 ===
+        self.atr_period = 14
+        self.atr_stop_multiplier = atr_stop_multiplier
+        self.trailing_stop_enabled = trailing_stop
 
         # === 特徵提取器 ===
         self.feature_aggregator = FeatureAggregator(
@@ -112,6 +116,9 @@ class TradingEnv(gym.Env):
         self._high_prices = self.df['high'].to_numpy(dtype=np.float64)
         self._low_prices = self.df['low'].to_numpy(dtype=np.float64)
         self._open_prices = self.df['open'].to_numpy(dtype=np.float64)
+
+        # === 預計算 ATR 數組（供動態止損使用）===
+        self._atr_values = self._precompute_atr()
 
         # === 優化：預計算所有特徵 ===
         if precomputed_features is not None:
@@ -142,13 +149,14 @@ class TradingEnv(gym.Env):
         # 動作空間: 0=平倉, 1=做多, 2=做空, 3=持有
         self.action_space = spaces.Discrete(4)
 
-        # 觀察空間: 25 維 = 20 ICT 特徵 + 5 持倉狀態特徵
-        # 新增維度: position_state, floating_pnl_pct, holding_time_norm,
-        #           distance_to_stop_loss, equity_change_pct
+        # 觀察空間: 28 維 = 23 ICT 特徵 + 5 持倉狀態特徵
+        # ICT 20 原始 + atr_normalized + hour_sin + hour_cos = 23
+        # 持倉: position_state, floating_pnl_pct, holding_time_norm,
+        #        distance_to_stop_loss, equity_change_pct = 5
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(25,),
+            shape=(28,),
             dtype=np.float32
         )
 
@@ -285,7 +293,8 @@ class TradingEnv(gym.Env):
         self.realized_this_step = False
         self.last_realized_pnl = 0.0
 
-        # === 1. 檢查止損（交易員的生命線）===
+        # === 1. 更新追蹤止損 → 檢查止損（交易員的生命線）===
+        self._update_trailing_stop(current_price)
         stop_loss_triggered = self._check_stop_loss(current_price)
 
         # === 2. 執行交易動作 ===
@@ -327,12 +336,12 @@ class TradingEnv(gym.Env):
 
     def _get_observation(self) -> np.ndarray:
         """
-        獲取當前觀察（25維 = 20 ICT + 5 持倉狀態）
+        獲取當前觀察（28維 = 23 ICT 特徵 + 5 持倉狀態）
 
-        交易員視角：我需要知道市場結構、關鍵區域、流動性，
+        交易員視角：我需要知道市場結構、關鍵區域、流動性、波動率、時段，
         以及自己的持倉狀態（方向、盈虧、風險距離）
         """
-        # 20 維市場特徵
+        # 23 維市場特徵（20 ICT + atr_normalized + hour_sin + hour_cos）
         market_features = self.feature_aggregator.get_state_vector(self.df, self.current_step)
 
         # 5 維持倉狀態特徵
@@ -368,7 +377,7 @@ class TradingEnv(gym.Env):
         equity_change_pct = (self.equity - self.initial_balance) / self.initial_balance
         equity_change_pct = np.clip(equity_change_pct, -1.0, 1.0)
 
-        # 組合 25 維觀察向量
+        # 組合 28 維觀察向量（23 市場 + 5 持倉）
         position_features = np.array([
             position_state,
             floating_pnl_pct,
@@ -378,6 +387,39 @@ class TradingEnv(gym.Env):
         ], dtype=np.float32)
 
         return np.concatenate([market_features, position_features])
+
+    def _precompute_atr(self) -> np.ndarray:
+        """預計算整個數據集的 ATR 數組（供動態止損使用）"""
+        highs = self._high_prices
+        lows = self._low_prices
+        closes = self._close_prices
+        prev_close = np.roll(closes, 1)
+        prev_close[0] = closes[0]
+        true_range = np.maximum(
+            highs - lows,
+            np.maximum(np.abs(highs - prev_close), np.abs(lows - prev_close))
+        )
+        import pandas as _pd
+        atr = _pd.Series(true_range).rolling(self.atr_period, min_periods=1).mean().to_numpy()
+        return atr
+
+    def _update_trailing_stop(self, current_price: float):
+        """
+        追蹤止損：止損價只能朝有利方向移動，鎖住已有利潤。
+        """
+        if self.position == 0 or not self.trailing_stop_enabled:
+            return
+
+        atr = self._atr_values[self.current_step]
+
+        if self.position == 1:  # 多倉：止損只能上移
+            new_sl = current_price - self.atr_stop_multiplier * atr
+            if new_sl > self.stop_loss_price:
+                self.stop_loss_price = new_sl
+        else:  # 空倉：止損只能下移
+            new_sl = current_price + self.atr_stop_multiplier * atr
+            if new_sl < self.stop_loss_price:
+                self.stop_loss_price = new_sl
 
     def _check_stop_loss(self, current_price: float) -> bool:
         """
@@ -466,11 +508,19 @@ class TradingEnv(gym.Env):
             self.entry_price = current_price * (1 - self.slippage)
         self.holding_time = 0
 
-        # 設置止損價格（1.5% 價格波動）
-        if direction == 1:  # 多倉止損在下方
-            self.stop_loss_price = current_price * (1 - self.stop_loss_pct)
-        else:  # 空倉止損在上方
-            self.stop_loss_price = current_price * (1 + self.stop_loss_pct)
+        # 設置止損價格（ATR 動態止損，fallback 到固定百分比）
+        atr = self._atr_values[self.current_step]
+        if atr > 0:
+            if direction == 1:  # 多倉止損在下方
+                self.stop_loss_price = current_price - self.atr_stop_multiplier * atr
+            else:  # 空倉止損在上方
+                self.stop_loss_price = current_price + self.atr_stop_multiplier * atr
+        else:
+            # ATR 不可用（warmup 期），使用固定百分比
+            if direction == 1:
+                self.stop_loss_price = current_price * (1 - self.stop_loss_pct)
+            else:
+                self.stop_loss_price = current_price * (1 + self.stop_loss_pct)
 
         # 扣除手續費
         fee = position_value * self.leverage * self.trading_fee

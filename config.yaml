@@ -12,7 +12,9 @@ trading:
   max_positions: 1                # 最多同時持倉數
 
   # 風險管理
-  stop_loss_pct: 0.015            # 止損百分比（1.5%）
+  stop_loss_pct: 0.015            # 止損百分比（1.5%，ATR 不可用時的 fallback）
+  atr_stop_multiplier: 2.0        # ATR 止損倍數（2x ATR，動態適應波動率）
+  trailing_stop: true             # 啟用追蹤止損（止損價只朝有利方向移動）
   daily_drawdown_limit: 0.10      # 單日回撤限制（10%）
 
   # 交易成本

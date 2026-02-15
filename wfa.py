@@ -185,6 +185,8 @@ def _run_single_fold(args: tuple) -> Dict:
                     feature_config=config.get("features", {}),
                     reward_config=config.get("reward", {}),
                     precomputed_features=train_features,
+                    atr_stop_multiplier=trading_cfg.get("atr_stop_multiplier", 2.0),
+                    trailing_stop=trading_cfg.get("trailing_stop", True),
                 )
                 env.reset(seed=42 + rank + fold_id * 100)
                 return env
@@ -248,6 +250,12 @@ def _run_single_fold(args: tuple) -> Dict:
         )
         PPOTradingStrategy.stop_loss_pct = float(
             trading_cfg.get("stop_loss_pct", 0.015)
+        )
+        PPOTradingStrategy.atr_stop_multiplier = float(
+            trading_cfg.get("atr_stop_multiplier", 2.0)
+        )
+        PPOTradingStrategy.trailing_stop = bool(
+            trading_cfg.get("trailing_stop", True)
         )
         PPOTradingStrategy.precomputed_features = test_features
 

@@ -43,6 +43,8 @@ class VolumeAnalyzer:
         self._vwap_momentum_cache = None
         self._price_position_cache = None
         self._zone_class_cache = None
+        self._atr_cache = None              # 原始 ATR（價格單位，供環境止損用）
+        self._atr_normalized_cache = None   # ATR / close（正規化，供特徵用）
 
     def precompute_all_features(self, df: pd.DataFrame) -> None:
         """
@@ -117,6 +119,19 @@ class VolumeAnalyzer:
             position >= 61.8, 1,  # Premium
             np.where(position <= 38.2, -1, 0)  # Discount or Equilibrium
         ).astype(np.int8)
+
+        # 6. 向量化計算 ATR (Average True Range)
+        atr_period = 14
+        prev_close = np.roll(closes, 1)
+        prev_close[0] = closes[0]
+        true_range = np.maximum(
+            highs - lows,
+            np.maximum(np.abs(highs - prev_close), np.abs(lows - prev_close))
+        )
+        atr = pd.Series(true_range).rolling(atr_period, min_periods=1).mean().to_numpy()
+        self._atr_cache = atr.astype(np.float64)
+        # 正規化：ATR / close（衡量相對波動率）
+        self._atr_normalized_cache = (atr / np.maximum(closes, 1e-10)).astype(np.float32)
 
         self._cache_valid = True
 

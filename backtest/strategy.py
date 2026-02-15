@@ -27,6 +27,8 @@ class PPOTradingStrategy(Strategy):
     feature_config: Optional[dict] = None
     position_size_pct: float = 0.15
     stop_loss_pct: float = 0.015
+    atr_stop_multiplier: float = 2.0
+    trailing_stop: bool = True
     deterministic: bool = True
     # 可選：外部傳入預計算特徵（避免重複計算）
     precomputed_features: Optional[np.ndarray] = None
@@ -71,12 +73,25 @@ class PPOTradingStrategy(Strategy):
             )
             print(f"[Strategy] Feature cache ready: {self._feature_cache.shape}")
 
-        # === v8.0：持倉狀態追蹤（用於生成 25 維觀察空間）===
+        # === 預計算 ATR（供動態止損使用）===
+        closes = data_df['close'].to_numpy(dtype=np.float64)
+        highs = data_df['high'].to_numpy(dtype=np.float64)
+        lows = data_df['low'].to_numpy(dtype=np.float64)
+        prev_close = np.roll(closes, 1)
+        prev_close[0] = closes[0]
+        true_range = np.maximum(
+            highs - lows,
+            np.maximum(np.abs(highs - prev_close), np.abs(lows - prev_close))
+        )
+        self._atr_values = pd.Series(true_range).rolling(14, min_periods=1).mean().to_numpy()
+
+        # === 持倉狀態追蹤（用於生成 28 維觀察空間）===
         self._entry_price = 0.0       # 開倉價格
         self._holding_steps = 0       # 持倉步數
         self._initial_equity = None   # 初始權益（延遲初始化）
         self._last_close_step = -999  # 上次平倉步數
         self._current_step = 0       # 當前步數計數器
+        self._current_sl = 0.0       # 當前止損價格（含追蹤）
 
     def _get_position_features(self, price: float) -> np.ndarray:
         """
@@ -110,14 +125,12 @@ class PPOTradingStrategy(Strategy):
         else:
             holding_time_norm = 0.0
 
-        # (4) 距止損距離百分比 (0~1)
-        if self.position and self._entry_price > 0:
+        # (4) 距止損距離百分比 (0~1)，使用追蹤止損價
+        if self.position and self._entry_price > 0 and self._current_sl > 0:
             if self.position.is_long:
-                sl_price = self._entry_price * (1 - self.stop_loss_pct)
-                dist_to_sl = (price - sl_price) / (self._entry_price - sl_price + 1e-10)
+                dist_to_sl = (price - self._current_sl) / (self._entry_price - self._current_sl + 1e-10)
             else:
-                sl_price = self._entry_price * (1 + self.stop_loss_pct)
-                dist_to_sl = (sl_price - price) / (sl_price - self._entry_price + 1e-10)
+                dist_to_sl = (self._current_sl - price) / (self._current_sl - self._entry_price + 1e-10)
             dist_to_sl = np.clip(dist_to_sl, 0.0, 2.0) / 2.0
         else:
             dist_to_sl = 0.0
@@ -149,7 +162,21 @@ class PPOTradingStrategy(Strategy):
 
         price = float(self.data.Close[-1])
 
-        # === 組合 25 維觀察空間：20 維市場特徵 + 5 維持倉狀態 ===
+        # === 追蹤止損更新 ===
+        if self.position and self.trailing_stop and self._current_sl > 0:
+            current_idx_for_atr = len(self.data.Close) - 1
+            atr = self._atr_values[current_idx_for_atr] if current_idx_for_atr < len(self._atr_values) else 0
+            if atr > 0:
+                if self.position.is_long:
+                    new_sl = price - self.atr_stop_multiplier * atr
+                    if new_sl > self._current_sl:
+                        self._current_sl = new_sl
+                elif self.position.is_short:
+                    new_sl = price + self.atr_stop_multiplier * atr
+                    if new_sl < self._current_sl:
+                        self._current_sl = new_sl
+
+        # === 組合 28 維觀察空間：23 維市場特徵 + 5 維持倉狀態 ===
         market_features = self._feature_cache[current_idx]
         position_features = self._get_position_features(price)
         state = np.concatenate([market_features, position_features])
@@ -166,6 +193,7 @@ class PPOTradingStrategy(Strategy):
                 self.position.close()
                 self._entry_price = 0.0
                 self._holding_steps = 0
+                self._current_sl = 0.0
                 self._last_close_step = self._current_step
             self._current_step += 1
             return
@@ -175,12 +203,18 @@ class PPOTradingStrategy(Strategy):
                 self.position.close()
                 self._entry_price = 0.0
                 self._holding_steps = 0
+                self._current_sl = 0.0
                 self._last_close_step = self._current_step
             if not self.position:
-                sl_price = price * (1 - self.stop_loss_pct)
+                atr = self._atr_values[current_idx] if current_idx < len(self._atr_values) else 0
+                if atr > 0:
+                    sl_price = price - self.atr_stop_multiplier * atr
+                else:
+                    sl_price = price * (1 - self.stop_loss_pct)
                 self.buy(size=self.position_size_pct, sl=sl_price, tag="long")
                 self._entry_price = price
                 self._holding_steps = 0
+                self._current_sl = sl_price
             self._current_step += 1
             return
 
@@ -189,12 +223,18 @@ class PPOTradingStrategy(Strategy):
                 self.position.close()
                 self._entry_price = 0.0
                 self._holding_steps = 0
+                self._current_sl = 0.0
                 self._last_close_step = self._current_step
             if not self.position:
-                sl_price = price * (1 + self.stop_loss_pct)
+                atr = self._atr_values[current_idx] if current_idx < len(self._atr_values) else 0
+                if atr > 0:
+                    sl_price = price + self.atr_stop_multiplier * atr
+                else:
+                    sl_price = price * (1 + self.stop_loss_pct)
                 self.sell(size=self.position_size_pct, sl=sl_price, tag="short")
                 self._entry_price = price
                 self._holding_steps = 0
+                self._current_sl = sl_price
             self._current_step += 1
             return
 

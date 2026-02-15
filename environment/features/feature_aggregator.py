@@ -139,7 +139,12 @@ class FeatureAggregator:
             'zone_classification',
             # Multi-Timeframe (2)
             'trend_5m',
-            'trend_15m'
+            'trend_15m',
+            # Volatility (1)
+            'atr_normalized',
+            # Time (2)
+            'hour_sin',
+            'hour_cos'
         ]
 
     def precompute_all_features(self, df: pd.DataFrame, verbose: bool = True) -> None:
@@ -228,6 +233,14 @@ class FeatureAggregator:
         # Multi-Timeframe (2 features)
         self._feature_cache[:, 18] = self.mtf_analyzer._trend_5m_cache
         self._feature_cache[:, 19] = self.mtf_analyzer._trend_15m_cache
+
+        # ATR Normalized (1 feature)
+        self._feature_cache[:, 20] = self.volume_analyzer._atr_normalized_cache
+
+        # Time features (2 features) — 從 DatetimeIndex 計算
+        hours = df.index.hour + df.index.minute / 60.0  # fractional hour
+        self._feature_cache[:, 21] = np.sin(2 * np.pi * hours / 24).astype(np.float32)
+        self._feature_cache[:, 22] = np.cos(2 * np.pi * hours / 24).astype(np.float32)
 
         self._cache_valid = True
         if verbose:

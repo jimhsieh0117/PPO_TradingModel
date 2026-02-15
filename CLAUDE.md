@@ -21,7 +21,7 @@
 | 槓桿倍數 | 1x | 無槓桿（v9 配置） |
 | 倉位大小 | 100% | 全倉操作 |
 | 實際敞口 | 100% | 1.0 × 1x |
-| 止損設定 | 1.5% | 價格波動止損 |
+| 止損設定 | 2x ATR | 動態止損 + 追蹤止損（1.5% 為 fallback） |
 | 單日回撤限制 | 10% | 觸發停止交易 |
 | 初始資金 | 1,000,000 USDT | 回測資金 |
 
@@ -50,7 +50,7 @@ Action Space: Discrete(4)
 }
 ```
 
-### 狀態空間特徵（25 維 = 20 ICT + 5 持倉狀態）
+### 狀態空間特徵（28 維 = 23 ICT + 5 持倉狀態）
 
 #### 1. 市場結構 (Market Structure) - 3 個
 - `trend_state`, `structure_signal`, `bars_since_structure_change`
@@ -70,14 +70,21 @@ Action Space: Discrete(4)
 #### 6. Multi-Timeframe - 2 個
 - `trend_5m`, `trend_15m`
 
-#### 7. 持倉狀態（v8.0 新增）- 5 個
+#### 7. 波動率（v0.6 新增）- 1 個
+- `atr_normalized`: ATR / close，當前相對波動率水平
+
+#### 8. 時間特徵（v0.6 新增）- 2 個
+- `hour_sin`: sin(2π × hour/24)，捕捉亞洲/歐美時段週期
+- `hour_cos`: cos(2π × hour/24)
+
+#### 9. 持倉狀態 - 5 個
 - `position_state`: 持倉方向 {-1, 0, 1}
 - `floating_pnl_pct`: 浮動盈虧百分比
 - `holding_time_norm`: 持倉時間正規化 (0~1)
 - `distance_to_stop_loss`: 距止損距離 (0~1)
 - `equity_change_pct`: Episode 權益變化
 
-**總計：25 個特徵** ✅
+**總計：28 個特徵** ✅
 
 ---
 
@@ -508,6 +515,16 @@ PPO_TradingModel/
 ---
 
 ## 📝 版本記錄
+
+- **v0.6** (2026-02-16): ATR 動態止損 + 波動率/時間特徵
+  - ✅ ATR 動態止損：取代固定 1.5%，使用 2x ATR 倍數適應市場波動
+  - ✅ 追蹤止損：止損價只朝有利方向移動，鎖住已有利潤
+  - ✅ 新增 `atr_normalized` 特徵：讓模型感知當前波動率水平
+  - ✅ 新增 `hour_sin`, `hour_cos` 時間特徵：捕捉亞洲/歐美時段交易模式
+  - ✅ 觀察空間更新：25 維 → 28 維（23 ICT + 5 持倉）
+  - ✅ VolumeAnalyzer 新增 ATR 預計算（原始 + 正規化）
+  - ✅ 環境、回測策略、WFA 全部同步更新
+  - ✅ config.yaml 新增 `atr_stop_multiplier`, `trailing_stop` 參數
 
 - **v0.5** (2026-02-16): 數據管線重寫（增量下載 + 處理後數據快取）
   - ✅ 重寫 `utils/data_pipeline.py`：增量下載架構，僅補足缺少的日期範圍

@@ -116,7 +116,9 @@ def create_training_env(df: pd.DataFrame, config: dict):
                 episode_length=training_config.get('episode_length', 1440),
                 feature_config=config.get('features', {}),
                 reward_config=config.get('reward', {}),
-                precomputed_features=precomputed_features  # 傳入預計算的特徵
+                precomputed_features=precomputed_features,
+                atr_stop_multiplier=trading_config.get('atr_stop_multiplier', 2.0),
+                trailing_stop=trading_config.get('trailing_stop', True),
             )
             if seed is not None:
                 env.reset(seed=seed + rank)
