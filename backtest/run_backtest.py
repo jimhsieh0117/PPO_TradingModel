@@ -220,9 +220,20 @@ def main() -> None:
     backtest_config = config.get("backtest", {})
     trading_config = config.get("trading", {})
 
+    # 從 pipeline DataFrame 提取預計算特徵（23 維 ICT 特徵）
+    from utils.data_pipeline import extract_features, FEATURE_COLUMNS
+    feature_cols_present = [c for c in FEATURE_COLUMNS if c in df_raw.columns]
+    if len(feature_cols_present) == len(FEATURE_COLUMNS):
+        precomputed = extract_features(df_raw)
+        print(f"      Extracted precomputed features: {precomputed.shape}")
+    else:
+        precomputed = None
+        print(f"      Warning: Missing feature columns, will compute on-the-fly")
+
     print(f"\n[2/4] Loading model: {model_path.name}")
     PPOTradingStrategy.model_path = str(model_path)
     PPOTradingStrategy.feature_config = config.get("features", {})
+    PPOTradingStrategy.precomputed_features = precomputed
     PPOTradingStrategy.position_size_pct = float(trading_config.get("position_size_pct", 0.15))
     PPOTradingStrategy.stop_loss_pct = float(trading_config.get("stop_loss_pct", 0.015))
     PPOTradingStrategy.atr_stop_multiplier = float(trading_config.get("atr_stop_multiplier", 2.0))
