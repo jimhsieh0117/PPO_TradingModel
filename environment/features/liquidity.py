@@ -42,7 +42,7 @@ class LiquidityDetector:
         self._liq_below_cache = None    # [n] 下方流動性距離
         self._liq_sweep_cache = None    # [n] 是否發生掃蕩
 
-    def precompute_all_features(self, df: pd.DataFrame) -> None:
+    def precompute_all_features(self, df: pd.DataFrame, atr_array: np.ndarray = None) -> None:
         """
         預計算整個數據集的流動性特徵
 
@@ -50,15 +50,19 @@ class LiquidityDetector:
 
         Args:
             df: OHLC 數據
+            atr_array: ATR 陣列（用於距離正規化，取代 / price * 100）
         """
         n = len(df)
         highs = df['high'].to_numpy(dtype=np.float64)
         lows = df['low'].to_numpy(dtype=np.float64)
         closes = df['close'].to_numpy(dtype=np.float64)
 
-        # 初始化緩存
-        self._liq_above_cache = np.full(n, 5.0, dtype=np.float32)
-        self._liq_below_cache = np.full(n, 5.0, dtype=np.float32)
+        # 保存 ATR 供 fallback 路徑使用
+        self._atr_array = atr_array
+
+        # 初始化緩存（哨兵值 50.0 = 50 ATR，表示附近無流動性）
+        self._liq_above_cache = np.full(n, 50.0, dtype=np.float32)
+        self._liq_below_cache = np.full(n, 50.0, dtype=np.float32)
         self._liq_sweep_cache = np.zeros(n, dtype=np.int8)
 
         # 1. 向量化識別 swing points (流動性區域)
@@ -99,10 +103,14 @@ class LiquidityDetector:
                 active_highs = {k: v for k, v in active_highs.items() if k >= cutoff}
                 active_lows = {k: v for k, v in active_lows.items() if k >= cutoff}
 
+            # ATR 正規化：距離以 ATR 為單位（價格無關）
+            atr_val = atr_array[i] if atr_array is not None else current_price * 0.01
+            atr_val = max(atr_val, 1e-10)
+
             # 檢測掃蕩 + 找最近流動性（同時進行）
             sweep_detected = False
-            nearest_above_dist = 5.0
-            nearest_below_dist = 5.0
+            nearest_above_dist = 50.0
+            nearest_below_dist = 50.0
 
             cutoff_i = i - max_liq_age
             swept_highs = []
@@ -118,9 +126,9 @@ class LiquidityDetector:
                         swept_highs.append(idx)
                         sweep_detected = True
                         continue
-                # 計算上方距離
+                # 計算上方距離（ATR 正規化）
                 if swing_price > current_price:
-                    dist = (swing_price - current_price) / current_price * 100
+                    dist = (swing_price - current_price) / atr_val
                     if dist < nearest_above_dist:
                         nearest_above_dist = dist
 
@@ -134,7 +142,7 @@ class LiquidityDetector:
                         sweep_detected = True
                         continue
                 if swing_price < current_price:
-                    dist = (current_price - swing_price) / current_price * 100
+                    dist = (current_price - swing_price) / atr_val
                     if dist < nearest_below_dist:
                         nearest_below_dist = dist
 
@@ -196,8 +204,8 @@ class LiquidityDetector:
 
         if len(df_lookback) < 20:
             return {
-                'liquidity_above': 5.0,
-                'liquidity_below': 5.0,
+                'liquidity_above': 50.0,
+                'liquidity_below': 50.0,
                 'liquidity_sweep': 0
             }
 
@@ -211,9 +219,16 @@ class LiquidityDetector:
         current_high = highs[-1]
         current_low = lows[-1]
 
+        # ATR 正規化（fallback 路徑）
+        if hasattr(self, '_atr_array') and self._atr_array is not None:
+            atr_val = float(self._atr_array[current_idx])
+        else:
+            atr_val = current_price * 0.01  # 粗略 fallback
+        atr_val = max(atr_val, 1e-10)
+
         result = {
-            'liquidity_above': 5.0,
-            'liquidity_below': 5.0,
+            'liquidity_above': 50.0,
+            'liquidity_below': 50.0,
             'liquidity_sweep': 0
         }
 
@@ -224,7 +239,7 @@ class LiquidityDetector:
                 continue
             swing_price = highs[idx]
             if swing_price > current_price:
-                dist = (swing_price - current_price) / current_price * 100
+                dist = (swing_price - current_price) / atr_val
                 if dist < result['liquidity_above']:
                     result['liquidity_above'] = dist
 
@@ -240,7 +255,7 @@ class LiquidityDetector:
                 continue
             swing_price = lows[idx]
             if swing_price < current_price:
-                dist = (current_price - swing_price) / current_price * 100
+                dist = (current_price - swing_price) / atr_val
                 if dist < result['liquidity_below']:
                     result['liquidity_below'] = dist
 

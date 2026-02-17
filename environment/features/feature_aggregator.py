@@ -167,35 +167,36 @@ class FeatureAggregator:
         if verbose:
             print(f"[FeatureAggregator] Precomputing {n:,} steps x {n_features} features...")
 
-        # 1. 預計算 Multi-Timeframe（最重要的優化）
+        # 1. 預計算 Volume & Price（必須最先，產生 ATR 供其他模塊使用）
         if verbose:
-            print("   [1/6] Multi-Timeframe...")
+            print("   [1/6] Volume & Price (ATR)...")
+        self.volume_analyzer.precompute_all_features(df)
+        atr_array = self.volume_analyzer._atr_cache  # ATR 原始值，傳給距離正規化
+
+        # 2. 預計算 Multi-Timeframe
+        if verbose:
+            print("   [2/6] Multi-Timeframe...")
         self.mtf_analyzer.precompute_all_features(df)
 
-        # 2. 預計算 Market Structure
+        # 3. 預計算 Market Structure
         if verbose:
-            print("   [2/6] Market Structure...")
+            print("   [3/6] Market Structure...")
         self.market_structure.precompute_all_features(df)
 
-        # 3. 預計算 Order Blocks
+        # 4. 預計算 Order Blocks（使用 ATR 正規化距離）
         if verbose:
-            print("   [3/6] Order Blocks...")
-        self.order_blocks.precompute_all_features(df)
+            print("   [4/6] Order Blocks...")
+        self.order_blocks.precompute_all_features(df, atr_array=atr_array)
 
-        # 4. 預計算 FVG
+        # 5. 預計算 FVG（使用 ATR 作為動態閾值）
         if verbose:
-            print("   [4/6] Fair Value Gaps...")
-        self.fvg_detector.precompute_all_features(df)
+            print("   [5/6] Fair Value Gaps...")
+        self.fvg_detector.precompute_all_features(df, atr_array=atr_array)
 
-        # 5. 預計算 Liquidity
+        # 6. 預計算 Liquidity（使用 ATR 正規化距離）
         if verbose:
-            print("   [5/6] Liquidity...")
-        self.liquidity_detector.precompute_all_features(df)
-
-        # 6. 預計算 Volume
-        if verbose:
-            print("   [6/6] Volume & Price...")
-        self.volume_analyzer.precompute_all_features(df)
+            print("   [6/6] Liquidity...")
+        self.liquidity_detector.precompute_all_features(df, atr_array=atr_array)
 
         # 7. 組裝所有特徵到緩存數組
         if verbose:

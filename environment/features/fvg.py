@@ -23,15 +23,17 @@ from typing import List, Dict, Tuple
 class FVGDetector:
     """Fair Value Gap 檢測器（向量化優化版）"""
 
-    def __init__(self, min_size_pct: float = 0.001, max_age: int = 100):
+    def __init__(self, min_size_pct: float = 0.001, max_age: int = 100, min_size_atr: float = 0.3):
         """
         初始化 FVG 檢測器
 
         Args:
-            min_size_pct: FVG 最小大小（百分比，默認 0.1%）
+            min_size_pct: FVG 最小大小（百分比，默認 0.1%，無 ATR 時的 fallback）
             max_age: FVG 最大保留期數（默認 100 根 K 線）
+            min_size_atr: FVG 最小大小（ATR 倍數，默認 0.3 ATR）
         """
         self.min_size_pct = min_size_pct
+        self.min_size_atr = min_size_atr
         self.max_age = max_age
 
         # 預計算緩存
@@ -40,7 +42,7 @@ class FVGDetector:
         self._in_bearish_cache = None      # [n] 是否在看跌 FVG 內
         self._nearest_dir_cache = None     # [n] 最近 FVG 方向
 
-    def precompute_all_features(self, df: pd.DataFrame) -> None:
+    def precompute_all_features(self, df: pd.DataFrame, atr_array: np.ndarray = None) -> None:
         """
         預計算整個數據集的 FVG 特徵
 
@@ -48,6 +50,7 @@ class FVGDetector:
 
         Args:
             df: OHLC 數據
+            atr_array: ATR 陣列（用於動態 FVG 大小閾值，取代固定百分比）
         """
         from collections import deque
 
@@ -71,14 +74,24 @@ class FVGDetector:
             h_shifted = highs[:-2]
             l_shifted = lows[2:]
             bull_mask = h_shifted < l_shifted
-            gap_size_bull = (l_shifted - h_shifted) / np.where(h_shifted > 0, h_shifted, 1.0)
-            bull_mask &= gap_size_bull >= self.min_size_pct
 
             l_first = lows[:-2]
             h_third = highs[2:]
             bear_mask = l_first > h_third
-            gap_size_bear = (l_first - h_third) / np.where(h_third > 0, h_third, 1.0)
-            bear_mask &= gap_size_bear >= self.min_size_pct
+
+            # FVG 大小過濾：使用 ATR 動態閾值（價格無關）
+            if atr_array is not None:
+                atr_shifted = np.maximum(atr_array[:-2], 1e-10)
+                gap_size_bull = (l_shifted - h_shifted) / atr_shifted
+                bull_mask &= gap_size_bull >= self.min_size_atr
+                gap_size_bear = (l_first - h_third) / atr_shifted
+                bear_mask &= gap_size_bear >= self.min_size_atr
+            else:
+                # 無 ATR 時 fallback 到百分比閾值
+                gap_size_bull = (l_shifted - h_shifted) / np.where(h_shifted > 0, h_shifted, 1.0)
+                bull_mask &= gap_size_bull >= self.min_size_pct
+                gap_size_bear = (l_first - h_third) / np.where(h_third > 0, h_third, 1.0)
+                bear_mask &= gap_size_bear >= self.min_size_pct
 
             for idx in np.where(bull_mask)[0]:
                 bull_fvg_indices.append((idx, lows[idx + 2], highs[idx]))

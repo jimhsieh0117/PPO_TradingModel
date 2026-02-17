@@ -516,6 +516,16 @@ PPO_TradingModel/
 
 ## 📝 版本記錄
 
+- **v0.7** (2026-02-17): 修復特徵正規化縮放問題（ATR 正規化取代價格百分比）
+  - ✅ 修復距離特徵價格相依問題：`/ current_price * 100` → `/ ATR`
+  - ✅ 影響特徵：`dist_to_bullish_ob`, `dist_to_bearish_ob`, `liquidity_above`, `liquidity_below`
+  - ✅ 問題根因：相同 500 點距離在 $25K 顯示為 2%，在 $95K 顯示為 0.53%，導致 4x 失真
+  - ✅ FVG 檢測閾值動態化：固定 `min_size_pct` → ATR 相對閾值 `min_size_atr=0.3`
+  - ✅ 哨兵值更新：OB 距離 10.0→50.0，流動性距離 5.0→50.0（以 ATR 為單位）
+  - ✅ FeatureAggregator 計算順序調整：Volume 移至第 1 步（產生 ATR），再傳給 OB/FVG/Liquidity
+  - ✅ 清除舊快取（data/processed/ + data/cache/），強制重算特徵
+  - ⚠️ 舊模型與新特徵尺度不相容，需重新訓練
+
 - **v0.6** (2026-02-16): ATR 動態止損 + 波動率/時間特徵
   - ✅ ATR 動態止損：取代固定 1.5%，使用 2x ATR 倍數適應市場波動
   - ✅ 追蹤止損：止損價只朝有利方向移動，鎖住已有利潤
@@ -578,4 +588,4 @@ PPO_TradingModel/
 
 ---
 
-*最後更新：2026-02-16*
+*最後更新：2026-02-17*

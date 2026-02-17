@@ -41,7 +41,7 @@ class OrderBlockDetector:
         self._in_bullish_cache = None     # [n] 是否在看漲 OB 內
         self._in_bearish_cache = None     # [n] 是否在看跌 OB 內
 
-    def precompute_all_features(self, df: pd.DataFrame) -> None:
+    def precompute_all_features(self, df: pd.DataFrame, atr_array: np.ndarray = None) -> None:
         """
         預計算整個數據集的 Order Block 特徵
 
@@ -49,6 +49,7 @@ class OrderBlockDetector:
 
         Args:
             df: OHLC 數據
+            atr_array: ATR 陣列（用於距離正規化，取代 / price * 100）
         """
         n = len(df)
         highs = df['high'].to_numpy(dtype=np.float64)
@@ -56,9 +57,12 @@ class OrderBlockDetector:
         opens = df['open'].to_numpy(dtype=np.float64)
         closes = df['close'].to_numpy(dtype=np.float64)
 
-        # 初始化緩存
-        self._dist_bullish_cache = np.full(n, 10.0, dtype=np.float32)
-        self._dist_bearish_cache = np.full(n, 10.0, dtype=np.float32)
+        # 保存 ATR 供 fallback 路徑使用
+        self._atr_array = atr_array
+
+        # 初始化緩存（哨兵值 50.0 = 50 ATR，表示附近無 OB）
+        self._dist_bullish_cache = np.full(n, 50.0, dtype=np.float32)
+        self._dist_bearish_cache = np.full(n, 50.0, dtype=np.float32)
         self._in_bullish_cache = np.zeros(n, dtype=np.int8)
         self._in_bearish_cache = np.zeros(n, dtype=np.int8)
 
@@ -117,17 +121,21 @@ class OrderBlockDetector:
                 active_bull = [(idx, h, l) for idx, h, l in active_bull if idx >= cutoff]
                 active_bear = [(idx, h, l) for idx, h, l in active_bear if idx >= cutoff]
 
+            # ATR 正規化：距離以 ATR 為單位（價格無關）
+            atr_val = atr_array[i] if atr_array is not None else current_price * 0.01
+            atr_val = max(atr_val, 1e-10)
+
             # 找最近的 bullish OB（只掃活躍列表，O(max_ob_age) ≈ 常數）
-            nearest_bull_dist = 10.0
+            nearest_bull_dist = 50.0
             in_bull = 0
             cutoff_i = i - max_ob_age
             for ob_idx, ob_high, ob_low in active_bull:
                 if ob_idx < cutoff_i:
                     continue
                 if current_price > ob_high:
-                    dist = (current_price - ob_high) / current_price * 100
+                    dist = (current_price - ob_high) / atr_val
                 elif current_price < ob_low:
-                    dist = (ob_low - current_price) / current_price * 100
+                    dist = (ob_low - current_price) / atr_val
                 else:
                     dist = 0.0
                     in_bull = 1
@@ -137,15 +145,15 @@ class OrderBlockDetector:
                         in_bull = 1
 
             # 找最近的 bearish OB
-            nearest_bear_dist = 10.0
+            nearest_bear_dist = 50.0
             in_bear = 0
             for ob_idx, ob_high, ob_low in active_bear:
                 if ob_idx < cutoff_i:
                     continue
                 if current_price > ob_high:
-                    dist = (current_price - ob_high) / current_price * 100
+                    dist = (current_price - ob_high) / atr_val
                 elif current_price < ob_low:
-                    dist = (ob_low - current_price) / current_price * 100
+                    dist = (ob_low - current_price) / atr_val
                 else:
                     dist = 0.0
                     in_bear = 1
@@ -205,8 +213,8 @@ class OrderBlockDetector:
 
         if len(df_lookback) < 20:
             return {
-                'dist_to_bullish_ob': 10.0,
-                'dist_to_bearish_ob': 10.0,
+                'dist_to_bullish_ob': 50.0,
+                'dist_to_bearish_ob': 50.0,
                 'in_bullish_ob': 0,
                 'in_bearish_ob': 0
             }
@@ -226,9 +234,17 @@ class OrderBlockDetector:
         valid_size = candle_size >= self.min_size_pct
 
         current_price = closes[-1]
+
+        # ATR 正規化（fallback 路徑）
+        if hasattr(self, '_atr_array') and self._atr_array is not None:
+            atr_val = float(self._atr_array[current_idx])
+        else:
+            atr_val = current_price * 0.01  # 粗略 fallback
+        atr_val = max(atr_val, 1e-10)
+
         result = {
-            'dist_to_bullish_ob': 10.0,
-            'dist_to_bearish_ob': 10.0,
+            'dist_to_bullish_ob': 50.0,
+            'dist_to_bearish_ob': 50.0,
             'in_bullish_ob': 0,
             'in_bearish_ob': 0
         }
@@ -243,11 +259,11 @@ class OrderBlockDetector:
                         result['in_bullish_ob'] = 1
                         result['dist_to_bullish_ob'] = 0.0
                     elif current_price > ob_high:
-                        dist = (current_price - ob_high) / current_price * 100
+                        dist = (current_price - ob_high) / atr_val
                         if dist < result['dist_to_bullish_ob']:
                             result['dist_to_bullish_ob'] = dist
                     else:
-                        dist = (ob_low - current_price) / current_price * 100
+                        dist = (ob_low - current_price) / atr_val
                         if dist < result['dist_to_bullish_ob']:
                             result['dist_to_bullish_ob'] = dist
                     break
@@ -262,11 +278,11 @@ class OrderBlockDetector:
                         result['in_bearish_ob'] = 1
                         result['dist_to_bearish_ob'] = 0.0
                     elif current_price > ob_high:
-                        dist = (current_price - ob_high) / current_price * 100
+                        dist = (current_price - ob_high) / atr_val
                         if dist < result['dist_to_bearish_ob']:
                             result['dist_to_bearish_ob'] = dist
                     else:
-                        dist = (ob_low - current_price) / current_price * 100
+                        dist = (ob_low - current_price) / atr_val
                         if dist < result['dist_to_bearish_ob']:
                             result['dist_to_bearish_ob'] = dist
                     break
