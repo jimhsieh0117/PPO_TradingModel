@@ -40,7 +40,7 @@ ppo:
   device: "cpu"                  # 訓練設備：cpu 或 cuda（GPU）
 
   # 學習參數
-  learning_rate: 0.0003          # 學習率（v5: 0.0002 → 0.00015 穩定學習）
+  learning_rate: 0.0001          # 學習率（v5: 0.0002 → 0.00015 穩定學習）
   n_steps: 4096                   # 更新頻率（每 2048 steps 更新一次）- v8.1: 4096 → 2048 回退，CPU 上更快迭代
   batch_size: 64                 # 批次大小（GPU 優化）
 
@@ -53,23 +53,23 @@ ppo:
   # PPO 特定參數
   clip_range: 0.2                 # PPO Clip 範圍（v5: 0.23 → 0.2 標準值）
   clip_range_vf: 0.2             # Value Function Clip（null = 不裁剪）
-  ent_coef: 0.05                    # 熵係數（v8.1: 0.1 → 0.2 恢復探索，避免過早收斂）
+  ent_coef: 0.1                    # 熵係數（v8.1: 0.1 → 0.2 恢復探索，避免過早收斂）
   vf_coef: 0.5                    # Value Function 係數（v9: 2.0 → 0.5 恢復默認，避免 value loss 主導梯度）
   max_grad_norm: 0.5              # 梯度裁剪
 
   # 神經網絡架構
   policy_network:
-    - 384                         # 第一層神經元數
-    - 384                         # 第二層神經元數
+    - 128                         # 第一層神經元數
+    - 128                         # 第二層神經元數
   value_network:
-    - 384
-    - 384
+    - 128
+    - 128
 
 # ==================== 訓練設定 ====================
 training:
   # Episode 設定
   episode_length: 480            # Episode 長度（1440 steps = 24 小時）
-  total_timesteps: 1000000        # 總訓練步數
+  total_timesteps: 1300000        # 總訓練步數
 
   # 日誌與保存
   log_interval: 10                # 每 N 個 episode 記錄一次
@@ -91,16 +91,16 @@ training:
 # v9.0 設計：以已實現 PnL 為主導，大幅降低浮動獎勵權重
 #
 # 獎勵公式：
-#   reward = (realized_pnl / initial_balance) * pnl_reward_scale     # 平倉時
+#   if profit: reward = (realized_pnl / balance) * pnl_reward_scale * take_profit_multiplier  # 止盈 1.7x
+#   if loss:   reward = (realized_pnl / balance) * pnl_reward_scale * 1.0                     # 止損 1.0x
 #   reward += (floating_pnl_pct) * floating_reward_scale              # 每步（持倉時）
-#   if profitable_close: reward += holding_bonus                       # 盈利品質獎勵
-#   if rapid_reentry: reward -= rapid_reentry_penalty                  # 頻繁交易懲罰
 #   if stop_loss: reward -= stop_loss_extra_penalty
 #
 reward:
-  pnl_reward_scale: 1000           # 已實現盈虧縮放（滑點加入後成本 2.25x，500→1000 強化獲利信號）
+  pnl_reward_scale: 750           # 已實現盈虧縮放（滑點加入後成本 2.25x，500→1000 強化獲利信號）
+  take_profit_multiplier: 1.7     # 止盈獎勵倍數（盈利平倉 reward × 1.7，虧損平倉 × 1.0）
   floating_reward_scale: 30        # 浮動盈虧縮放（v9: 120 → 30 讓已實現 PnL 主導 reward）
-  stop_loss_extra_penalty: 3.0     # 止損額外懲罰
+  stop_loss_extra_penalty: 3.5     # 止損額外懲罰
   holding_bonus_max: 0.0           # v9: 移除，浮動獎勵已提供持倉信號
   holding_bonus_steps: 30          # 達到最大獎勵的持倉步數
   rapid_reentry_penalty: 0.0       # v9: 移除，手續費本身即為天然懲罰
@@ -142,7 +142,7 @@ wfa:
   train_window_months: 12           # 訓練窗口（月）
   test_window_months: 2             # 測試窗口（月）
   step_months: 2                    # 每次滾動步長（月）
-  total_timesteps: 500000           # 每個 fold 訓練步數
+  total_timesteps: 1000000           # 每個 fold 訓練步數
   max_parallel_folds: 3             # 同時並行的 fold 數
   n_cpu_per_fold: 2                 # 每個 fold 的環境數（DummyVecEnv）
 

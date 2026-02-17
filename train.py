@@ -161,6 +161,13 @@ def create_ppo_model(env, config: dict):
     training_config = config.get('training', {})
     tensorboard_log = f"./{training_config.get('tensorboard_log', 'tensorboard')}"
 
+    # 構建神經網路架構（從 config.yaml 讀取，SB3 默認是 [64, 64]）
+    policy_net = ppo_config.get('policy_network', [64, 64])
+    value_net = ppo_config.get('value_network', [64, 64])
+    policy_kwargs = dict(
+        net_arch=dict(pi=policy_net, vf=value_net)
+    )
+
     model = PPO(
         policy="MlpPolicy",
         env=env,
@@ -172,15 +179,19 @@ def create_ppo_model(env, config: dict):
         gamma=ppo_config.get('gamma', 0.99),
         gae_lambda=ppo_config.get('gae_lambda', 0.95),
         clip_range=ppo_config.get('clip_range', 0.2),
+        clip_range_vf=ppo_config.get('clip_range_vf', None),
         ent_coef=ppo_config.get('ent_coef', 0.01),
         vf_coef=ppo_config.get('vf_coef', 0.5),
         max_grad_norm=ppo_config.get('max_grad_norm', 0.5),
+        policy_kwargs=policy_kwargs,
         verbose=1,
         tensorboard_log=tensorboard_log
     )
 
     print("   [OK] PPO 模型創建成功")
     print(f"   - 策略: MlpPolicy")
+    print(f"   - Policy Network: {policy_net}")
+    print(f"   - Value Network: {value_net}")
     print(f"   - 設備: {ppo_config.get('device', 'cpu').upper()}")
     print(f"   - 學習率: {ppo_config.get('learning_rate', 3e-4)}")
     print(f"   - N Steps: {ppo_config.get('n_steps', 4096)}")

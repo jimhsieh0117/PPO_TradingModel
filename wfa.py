@@ -194,6 +194,13 @@ def _run_single_fold(args: tuple) -> Dict:
 
         env = DummyVecEnv([make_env(i) for i in range(n_envs)])
 
+        # 構建神經網路架構
+        policy_net = ppo_cfg.get('policy_network', [64, 64])
+        value_net = ppo_cfg.get('value_network', [64, 64])
+        policy_kwargs = dict(
+            net_arch=dict(pi=policy_net, vf=value_net)
+        )
+
         model = PPO(
             policy="MlpPolicy",
             env=env,
@@ -208,6 +215,7 @@ def _run_single_fold(args: tuple) -> Dict:
             ent_coef=ppo_cfg.get("ent_coef", 0.05),
             vf_coef=ppo_cfg.get("vf_coef", 0.5),
             max_grad_norm=ppo_cfg.get("max_grad_norm", 0.5),
+            policy_kwargs=policy_kwargs,
             verbose=0,
         )
 

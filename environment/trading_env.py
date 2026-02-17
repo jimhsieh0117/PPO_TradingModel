@@ -137,6 +137,7 @@ class TradingEnv(gym.Env):
         self.pnl_reward_scale = float(self.reward_config.get('pnl_reward_scale', 500))
         self.floating_reward_scale = float(self.reward_config.get('floating_reward_scale', 80))  # v8.0: 降至 80
         self.stop_loss_extra_penalty = float(self.reward_config.get('stop_loss_extra_penalty', 3.0))
+        self.take_profit_multiplier = float(self.reward_config.get('take_profit_multiplier', 1.7))  # 止盈獎勵倍數（相對止損 1.0x）
         self.holding_bonus_max = float(self.reward_config.get('holding_bonus_max', 1.5))  # v8.0: 盈利持倉獎勵
         self.holding_bonus_steps = float(self.reward_config.get('holding_bonus_steps', 30.0))  # 達到最大獎勵的步數
         self.rapid_reentry_penalty = float(self.reward_config.get('rapid_reentry_penalty', 0.5))  # v8.0: 頻繁交易懲罰
@@ -637,7 +638,11 @@ class TradingEnv(gym.Env):
         # === 核心：已實現盈虧（平倉時才有，主要獎勵）===
         if self.realized_this_step:
             realized_return = self.last_realized_pnl / self.initial_balance
-            reward = realized_return * self.pnl_reward_scale  # 約 ±7.5
+            # 不對稱獎勵：止盈 × take_profit_multiplier（1.7x），止損 × 1.0x
+            if self.last_realized_pnl > 0:
+                reward = realized_return * self.pnl_reward_scale * self.take_profit_multiplier
+            else:
+                reward = realized_return * self.pnl_reward_scale
 
             # === v8.0 新增：盈利交易品質獎勵（鼓勵讓利潤奔跑）===
             if self.last_realized_pnl > 0:
