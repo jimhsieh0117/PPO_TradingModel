@@ -687,11 +687,8 @@ class TradingEnv(gym.Env):
         self.realized_this_step = False
         self.last_realized_pnl = 0.0
 
-        # v10: 簡單 clip（取代 EMA normalization，避免非穩態 value target）
-        if self.normalize_reward:
-            reward = self._normalize_reward(reward)
-        else:
-            reward = max(min(reward, self._reward_clip), -self._reward_clip)
+        # Soft clip：tanh 壓縮，保留量級資訊（大虧 vs 小虧可區分）
+        reward = self._reward_clip * math.tanh(reward / self._reward_clip)
 
         return reward
 

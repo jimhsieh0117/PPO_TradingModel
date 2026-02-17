@@ -176,7 +176,8 @@ def _determine_missing_ranges(
         gaps.append((req_start.strftime("%Y-%m-%d"), gap_end))
 
     # Back gap: required end is after existing data
-    if req_end > existing_max + pd.Timedelta(minutes=2):
+    # 容忍度 1 天：避免尾端幾小時的缺失反覆觸發下載
+    if req_end > existing_max + pd.Timedelta(days=1):
         gap_start = (existing_max + pd.Timedelta(minutes=1)).strftime("%Y-%m-%d")
         gaps.append((gap_start, req_end.strftime("%Y-%m-%d")))
 
