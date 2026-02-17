@@ -142,6 +142,7 @@ class TradingEnv(gym.Env):
         self.holding_bonus_steps = float(self.reward_config.get('holding_bonus_steps', 30.0))  # 達到最大獎勵的步數
         self.rapid_reentry_penalty = float(self.reward_config.get('rapid_reentry_penalty', 0.5))  # v8.0: 頻繁交易懲罰
         self.rapid_reentry_threshold = int(self.reward_config.get('rapid_reentry_threshold', 3))  # 快速重開倉閾值（步）
+        self.episode_profit_bonus = float(self.reward_config.get('episode_profit_bonus', 100))  # Episode 結算獎勵縮放
 
         # 夏普比率相關（用於統計追蹤，不用於獎勵）
         self.sharpe_window = int(self.reward_config.get('sharpe_window', 60))
@@ -312,10 +313,12 @@ class TradingEnv(gym.Env):
         self._update_equity(current_price)
 
         # === 4. 計算獎勵 ===
+        will_truncate = (self.current_step + 1 >= self.episode_start_step + self.episode_length)
         reward = self._calculate_reward(
             action=action,
             trade_executed=trade_executed,
-            stop_loss_triggered=stop_loss_triggered
+            stop_loss_triggered=stop_loss_triggered,
+            episode_done=will_truncate
         )
 
         # === 5. 檢查終止條件 ===
@@ -608,7 +611,8 @@ class TradingEnv(gym.Env):
         self,
         action: int,
         trade_executed: bool,
-        stop_loss_triggered: bool
+        stop_loss_triggered: bool,
+        episode_done: bool = False
     ) -> float:
         """
         【v8.0】盈虧信號 + 交易品質獎勵 + 頻率懲罰
@@ -672,6 +676,11 @@ class TradingEnv(gym.Env):
         # === 止損額外懲罰（風險管理信號）===
         if stop_loss_triggered:
             reward -= self.stop_loss_extra_penalty
+
+        # === Episode 結算獎勵（整體表現回饋）===
+        if episode_done:
+            episode_return_pct = (self.equity - self.initial_balance) / self.initial_balance
+            reward += episode_return_pct * self.episode_profit_bonus
 
         # === 更新追蹤狀態 ===
         if action in [1, 2]:

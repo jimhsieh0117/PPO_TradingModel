@@ -101,10 +101,11 @@ reward:
   take_profit_multiplier: 1.7     # 止盈獎勵倍數（盈利平倉 reward × 1.7，虧損平倉 × 1.0）
   floating_reward_scale: 30        # 浮動盈虧縮放（v9: 120 → 30 讓已實現 PnL 主導 reward）
   stop_loss_extra_penalty: 3.5     # 止損額外懲罰
-  holding_bonus_max: 0.0           # v9: 移除，浮動獎勵已提供持倉信號
+  holding_bonus_max: 1.5           # 盈利交易持倉品質獎勵（持倉30步達最大值）
   holding_bonus_steps: 30          # 達到最大獎勵的持倉步數
   rapid_reentry_penalty: 0.0       # v9: 移除，手續費本身即為天然懲罰
   rapid_reentry_threshold: 3       # 重新開倉閾值（步）
+  episode_profit_bonus: 100        # Episode 結算獎勵縮放（+5% episode → +5.0 bonus）
 
 # ==================== ICT 特徵參數 ====================
 features:
@@ -142,7 +143,7 @@ wfa:
   train_window_months: 12           # 訓練窗口（月）
   test_window_months: 2             # 測試窗口（月）
   step_months: 2                    # 每次滾動步長（月）
-  total_timesteps: 1000000           # 每個 fold 訓練步數
+  total_timesteps: 500000           # 每個 fold 訓練步數
   max_parallel_folds: 3             # 同時並行的 fold 數
   n_cpu_per_fold: 2                 # 每個 fold 的環境數（DummyVecEnv）
 
