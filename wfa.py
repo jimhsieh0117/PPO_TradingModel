@@ -156,10 +156,12 @@ def _run_single_fold(args: tuple) -> Dict:
         os.environ["OMP_NUM_THREADS"] = "1"
         os.environ["MKL_NUM_THREADS"] = "1"
 
-        from stable_baselines3 import PPO
         from stable_baselines3.common.vec_env import DummyVecEnv
         from environment.trading_env import TradingEnv
         from agent.callbacks import TrainingMetricsCallback
+
+        lstm_cfg = config.get("lstm", {})
+        use_lstm = lstm_cfg.get("enabled", False)
 
         trading_cfg = config.get("trading", {})
         training_cfg = config.get("training", {})
@@ -197,12 +199,24 @@ def _run_single_fold(args: tuple) -> Dict:
         # 構建神經網路架構
         policy_net = ppo_cfg.get('policy_network', [64, 64])
         value_net = ppo_cfg.get('value_network', [64, 64])
-        policy_kwargs = dict(
-            net_arch=dict(pi=policy_net, vf=value_net)
-        )
 
-        model = PPO(
-            policy="MlpPolicy",
+        if use_lstm:
+            from sb3_contrib import RecurrentPPO as ModelClass
+            policy_name = "MlpLstmPolicy"
+            policy_kwargs = dict(
+                lstm_hidden_size=lstm_cfg.get('lstm_hidden_size', 128),
+                n_lstm_layers=lstm_cfg.get('n_lstm_layers', 1),
+                net_arch=dict(pi=policy_net, vf=value_net),
+            )
+        else:
+            from stable_baselines3 import PPO as ModelClass
+            policy_name = "MlpPolicy"
+            policy_kwargs = dict(
+                net_arch=dict(pi=policy_net, vf=value_net)
+            )
+
+        model = ModelClass(
+            policy=policy_name,
             env=env,
             device=ppo_cfg.get("device", "cpu"),
             learning_rate=ppo_cfg.get("learning_rate", 3e-4),
@@ -266,6 +280,7 @@ def _run_single_fold(args: tuple) -> Dict:
             trading_cfg.get("trailing_stop", True)
         )
         PPOTradingStrategy.precomputed_features = test_features
+        PPOTradingStrategy.use_lstm = use_lstm
 
         base_comm = float(backtest_cfg.get("commission", 0.0004))
         slippage = float(trading_cfg.get("slippage", 0.0))

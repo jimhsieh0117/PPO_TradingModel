@@ -144,7 +144,11 @@ class FeatureAggregator:
             'atr_normalized',
             # Time (2)
             'hour_sin',
-            'hour_cos'
+            'hour_cos',
+            # Market Regime (3)
+            'adx_normalized',
+            'volatility_regime',
+            'trend_strength',
         ]
 
     def precompute_all_features(self, df: pd.DataFrame, verbose: bool = True) -> None:
@@ -242,6 +246,11 @@ class FeatureAggregator:
         hours = df.index.hour + df.index.minute / 60.0  # fractional hour
         self._feature_cache[:, 21] = np.sin(2 * np.pi * hours / 24).astype(np.float32)
         self._feature_cache[:, 22] = np.cos(2 * np.pi * hours / 24).astype(np.float32)
+
+        # Market Regime (3 features)
+        self._feature_cache[:, 23] = self.volume_analyzer._adx_normalized_cache
+        self._feature_cache[:, 24] = self.volume_analyzer._volatility_regime_cache
+        self._feature_cache[:, 25] = self.volume_analyzer._trend_strength_cache
 
         self._cache_valid = True
         if verbose:

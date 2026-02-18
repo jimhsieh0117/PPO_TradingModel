@@ -45,6 +45,9 @@ class VolumeAnalyzer:
         self._zone_class_cache = None
         self._atr_cache = None              # 原始 ATR（價格單位，供環境止損用）
         self._atr_normalized_cache = None   # ATR / close（正規化，供特徵用）
+        self._adx_normalized_cache = None   # ADX(14) / 100, [0, 1]
+        self._volatility_regime_cache = None  # ATR 歷史百分位, [0, 1]
+        self._trend_strength_cache = None   # (close - EMA200) / ATR, [-1, 1]
 
     def precompute_all_features(self, df: pd.DataFrame) -> None:
         """
@@ -132,6 +135,37 @@ class VolumeAnalyzer:
         self._atr_cache = atr.astype(np.float64)
         # 正規化：ATR / close（衡量相對波動率）
         self._atr_normalized_cache = (atr / np.maximum(closes, 1e-10)).astype(np.float32)
+
+        # 7. ADX (Average Directional Index, 14 期)
+        adx_period = 14
+        high_diff = np.diff(highs, prepend=highs[0])
+        low_diff = -np.diff(lows, prepend=lows[0])
+        plus_dm = np.where((high_diff > low_diff) & (high_diff > 0), high_diff, 0.0)
+        minus_dm = np.where((low_diff > high_diff) & (low_diff > 0), low_diff, 0.0)
+
+        alpha = 1.0 / adx_period
+        tr_smooth = pd.Series(true_range).ewm(alpha=alpha, adjust=False).mean().to_numpy()
+        plus_dm_smooth = pd.Series(plus_dm).ewm(alpha=alpha, adjust=False).mean().to_numpy()
+        minus_dm_smooth = pd.Series(minus_dm).ewm(alpha=alpha, adjust=False).mean().to_numpy()
+
+        plus_di = 100.0 * plus_dm_smooth / np.maximum(tr_smooth, 1e-10)
+        minus_di = 100.0 * minus_dm_smooth / np.maximum(tr_smooth, 1e-10)
+
+        dx = 100.0 * np.abs(plus_di - minus_di) / np.maximum(plus_di + minus_di, 1e-10)
+        adx = pd.Series(dx).ewm(alpha=alpha, adjust=False).mean().to_numpy()
+        self._adx_normalized_cache = np.clip(adx / 100.0, 0.0, 1.0).astype(np.float32)
+
+        # 8. Volatility Regime: ATR 在過去 480 根 K 線中的百分位 (0~1)
+        volatility_lookback = 480
+        atr_series = pd.Series(atr)
+        self._volatility_regime_cache = atr_series.rolling(
+            volatility_lookback, min_periods=1
+        ).rank(pct=True).to_numpy().astype(np.float32)
+
+        # 9. Trend Strength: (close - EMA200) / ATR, 裁切到 [-1, 1]
+        ema200 = pd.Series(closes).ewm(span=200, min_periods=1).mean().to_numpy()
+        deviation = (closes - ema200) / np.maximum(atr, 1e-10)
+        self._trend_strength_cache = np.clip(deviation / 5.0, -1.0, 1.0).astype(np.float32)
 
         self._cache_valid = True
 

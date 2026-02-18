@@ -238,6 +238,7 @@ def main() -> None:
     PPOTradingStrategy.stop_loss_pct = float(trading_config.get("stop_loss_pct", 0.015))
     PPOTradingStrategy.atr_stop_multiplier = float(trading_config.get("atr_stop_multiplier", 2.0))
     PPOTradingStrategy.trailing_stop = bool(trading_config.get("trailing_stop", True))
+    PPOTradingStrategy.use_lstm = bool(config.get('lstm', {}).get('enabled', False))
 
     # 手續費 + 滑點（backtesting.py 的 commission 為百分比，與滑點單位一致）
     base_commission = float(backtest_config.get("commission", 0.0004))

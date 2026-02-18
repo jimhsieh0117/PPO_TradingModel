@@ -62,6 +62,10 @@ FEATURE_COLUMNS = [
     # Time (2)
     'hour_sin',
     'hour_cos',
+    # Market Regime (3)
+    'adx_normalized',
+    'volatility_regime',
+    'trend_strength',
 ]
 
 

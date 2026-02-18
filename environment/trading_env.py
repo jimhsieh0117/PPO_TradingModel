@@ -144,6 +144,12 @@ class TradingEnv(gym.Env):
         self.rapid_reentry_threshold = int(self.reward_config.get('rapid_reentry_threshold', 3))  # 快速重開倉閾值（步）
         self.episode_profit_bonus = float(self.reward_config.get('episode_profit_bonus', 100))  # Episode 結算獎勵縮放
 
+        # === 空倉機會成本 ===
+        self.idle_penalty_enabled = bool(self.reward_config.get('idle_penalty_enabled', False))
+        self.idle_penalty_atr_threshold = float(self.reward_config.get('idle_penalty_atr_threshold', 0.5))
+        self.idle_penalty_scale = float(self.reward_config.get('idle_penalty_scale', 0.3))
+        self.idle_penalty_cooldown = int(self.reward_config.get('idle_penalty_cooldown', 5))
+
         # 夏普比率相關（用於統計追蹤，不用於獎勵）
         self.sharpe_window = int(self.reward_config.get('sharpe_window', 60))
 
@@ -151,14 +157,14 @@ class TradingEnv(gym.Env):
         # 動作空間: 0=平倉, 1=做多, 2=做空, 3=持有
         self.action_space = spaces.Discrete(4)
 
-        # 觀察空間: 28 維 = 23 ICT 特徵 + 5 持倉狀態特徵
-        # ICT 20 原始 + atr_normalized + hour_sin + hour_cos = 23
+        # 觀察空間: 31 維 = 26 市場特徵 + 5 持倉狀態特徵
+        # ICT 20 原始 + atr_normalized + hour_sin + hour_cos + adx + vol_regime + trend_str = 26
         # 持倉: position_state, floating_pnl_pct, holding_time_norm,
         #        distance_to_stop_loss, equity_change_pct = 5
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(28,),
+            shape=(31,),
             dtype=np.float32
         )
 
@@ -666,6 +672,24 @@ class TradingEnv(gym.Env):
 
             # 浮動信號：權重由 config 控制（v8.0 建議 50~80）
             reward += floating_pct * self.floating_reward_scale
+
+        # === 空倉機會成本（只在無持倉時觸發）===
+        if self.idle_penalty_enabled and self.position == 0:
+            steps_since_close = self.current_step - self.last_close_step
+            if steps_since_close > self.idle_penalty_cooldown:
+                current_price = self._close_prices[self.current_step]
+                if self.current_step > 0:
+                    prev_price = self._close_prices[self.current_step - 1]
+                    price_move = abs(current_price - prev_price)
+                else:
+                    price_move = 0.0
+
+                atr_val = self._atr_values[self.current_step]
+                if atr_val > 0:
+                    move_ratio = price_move / atr_val
+                    if move_ratio > self.idle_penalty_atr_threshold:
+                        penalty = (move_ratio - self.idle_penalty_atr_threshold) * self.idle_penalty_scale
+                        reward -= min(penalty, 1.0)
 
         # === v8.0 新增：頻繁交易懲罰（抑制無效交易）===
         if trade_executed and action in [1, 2]:  # 開倉動作

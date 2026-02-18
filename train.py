@@ -20,7 +20,6 @@ from datetime import datetime
 from pathlib import Path
 
 # 強化學習核心
-from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, EvalCallback
 from stable_baselines3.common.utils import set_random_seed
@@ -143,33 +142,49 @@ def create_training_env(df: pd.DataFrame, config: dict):
 
 def create_ppo_model(env, config: dict):
     """
-    創建 PPO 模型
+    創建 PPO 模型（支援 MLP 或 LSTM）
 
     Args:
         env: 訓練環境
         config: 配置字典
 
     Returns:
-        PPO: PPO 模型實例
+        PPO 或 RecurrentPPO 模型實例
     """
     print("\n[MODEL] 創建 PPO 模型...")
 
-    # 從配置中獲取 PPO 參數
+    # 從配置中獲取參數
     ppo_config = config.get('ppo', {})
+    lstm_config = config.get('lstm', {})
+    use_lstm = lstm_config.get('enabled', False)
 
     # 獲取 tensorboard 日誌路徑
     training_config = config.get('training', {})
     tensorboard_log = f"./{training_config.get('tensorboard_log', 'tensorboard')}"
 
-    # 構建神經網路架構（從 config.yaml 讀取，SB3 默認是 [64, 64]）
+    # 構建神經網路架構
     policy_net = ppo_config.get('policy_network', [64, 64])
     value_net = ppo_config.get('value_network', [64, 64])
-    policy_kwargs = dict(
-        net_arch=dict(pi=policy_net, vf=value_net)
-    )
 
-    model = PPO(
-        policy="MlpPolicy",
+    if use_lstm:
+        from sb3_contrib import RecurrentPPO
+        ModelClass = RecurrentPPO
+        policy_name = "MlpLstmPolicy"
+        policy_kwargs = dict(
+            lstm_hidden_size=lstm_config.get('lstm_hidden_size', 128),
+            n_lstm_layers=lstm_config.get('n_lstm_layers', 1),
+            net_arch=dict(pi=policy_net, vf=value_net),
+        )
+    else:
+        from stable_baselines3 import PPO
+        ModelClass = PPO
+        policy_name = "MlpPolicy"
+        policy_kwargs = dict(
+            net_arch=dict(pi=policy_net, vf=value_net)
+        )
+
+    model = ModelClass(
+        policy=policy_name,
         env=env,
         device=ppo_config.get('device', 'cpu'),
         learning_rate=ppo_config.get('learning_rate', 3e-4),
@@ -188,10 +203,13 @@ def create_ppo_model(env, config: dict):
         tensorboard_log=tensorboard_log
     )
 
-    print("   [OK] PPO 模型創建成功")
-    print(f"   - 策略: MlpPolicy")
+    print(f"   [OK] 模型創建成功")
+    print(f"   - 策略: {policy_name}")
     print(f"   - Policy Network: {policy_net}")
     print(f"   - Value Network: {value_net}")
+    if use_lstm:
+        print(f"   - LSTM Hidden: {lstm_config.get('lstm_hidden_size', 128)}")
+        print(f"   - LSTM Layers: {lstm_config.get('n_lstm_layers', 1)}")
     print(f"   - 設備: {ppo_config.get('device', 'cpu').upper()}")
     print(f"   - 學習率: {ppo_config.get('learning_rate', 3e-4)}")
     print(f"   - N Steps: {ppo_config.get('n_steps', 4096)}")

@@ -32,12 +32,22 @@ class PPOTradingStrategy(Strategy):
     deterministic: bool = True
     # 可選：外部傳入預計算特徵（避免重複計算）
     precomputed_features: Optional[np.ndarray] = None
+    # LSTM 模式
+    use_lstm: bool = False
 
     def init(self) -> None:
         if not self.model_path:
             raise ValueError("model_path is required for PPOTradingStrategy")
 
-        self._model = PPO.load(self.model_path, device="cpu")
+        if self.use_lstm:
+            from sb3_contrib import RecurrentPPO
+            self._model = RecurrentPPO.load(self.model_path, device="cpu")
+        else:
+            self._model = PPO.load(self.model_path, device="cpu")
+
+        # LSTM 狀態追蹤
+        self._lstm_states = None
+        self._episode_starts = np.array([True])
 
         data_df = self.data.df.copy()
         data_df.columns = [col.lower() for col in data_df.columns]
@@ -176,12 +186,21 @@ class PPOTradingStrategy(Strategy):
                     if new_sl < self._current_sl:
                         self._current_sl = new_sl
 
-        # === 組合 28 維觀察空間：23 維市場特徵 + 5 維持倉狀態 ===
+        # === 組合 31 維觀察空間：26 維市場特徵 + 5 維持倉狀態 ===
         market_features = self._feature_cache[current_idx]
         position_features = self._get_position_features(price)
         state = np.concatenate([market_features, position_features])
 
-        action, _ = self._model.predict(state.reshape(1, -1), deterministic=self.deterministic)
+        if self.use_lstm:
+            action, self._lstm_states = self._model.predict(
+                state.reshape(1, -1),
+                state=self._lstm_states,
+                episode_start=self._episode_starts,
+                deterministic=self.deterministic
+            )
+            self._episode_starts = np.array([False])
+        else:
+            action, _ = self._model.predict(state.reshape(1, -1), deterministic=self.deterministic)
         action = int(action[0]) if isinstance(action, (np.ndarray, list)) else int(action)
 
         # 更新持倉時間

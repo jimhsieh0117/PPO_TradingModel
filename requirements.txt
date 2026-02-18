@@ -1,6 +1,7 @@
 # === 深度學習與強化學習核心 ===
 torch>=2.0.0
 stable-baselines3>=2.0.0
+sb3-contrib>=2.0.0
 gymnasium>=0.29.0
 
 # === 數據處理 ===
