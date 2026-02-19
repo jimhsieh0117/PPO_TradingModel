@@ -349,46 +349,28 @@ def main():
     print("基於 ICT 策略的加密貨幣交易機器人")
     print("=" * 60 + "\n")
 
-    # 1. 載入配置
-    print("[*] 步驟 1/6: 載入配置文件")
+    env = None  # 確保 finally 區塊可以安全檢查
+
     try:
+        # 1. 載入配置
+        print("[*] 步驟 1/6: 載入配置文件")
         config = load_config("config.yaml")
         print("   [OK] 配置載入成功\n")
-    except Exception as e:
-        print(f"   [ERR] 配置載入失敗: {e}")
-        return
 
-    # 2. 載入訓練數據
-    print("[*] 步驟 2/6: 載入訓練數據")
-    try:
+        # 2. 載入訓練數據
+        print("[*] 步驟 2/6: 載入訓練數據")
         df_train = load_training_data(config)
-    except Exception as e:
-        print(f"   [ERR] 數據載入失敗: {e}")
-        import traceback
-        traceback.print_exc()
-        return
 
-    # 3. 創建訓練環境
-    print("[*] 步驟 3/6: 創建訓練環境")
-    try:
+        # 3. 創建訓練環境
+        print("[*] 步驟 3/6: 創建訓練環境")
         env = create_training_env(df_train, config)
-    except Exception as e:
-        print(f"   [ERR] 環境創建失敗: {e}")
-        import traceback
-        traceback.print_exc()
-        return
 
-    # 4. 創建 PPO 模型
-    print("[*] 步驟 4/6: 創建 PPO 模型")
-    try:
+        # 4. 創建 PPO 模型
+        print("[*] 步驟 4/6: 創建 PPO 模型")
         model = create_ppo_model(env, config)
-    except Exception as e:
-        print(f"   [ERR] 模型創建失敗: {e}")
-        return
 
-    # 5. 設置回調
-    print("[*] 步驟 5/6: 設置訓練回調")
-    try:
+        # 5. 設置回調
+        print("[*] 步驟 5/6: 設置訓練回調")
         # 創建保存目錄（帶時間戳）
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         save_dir = f"models/run_{timestamp}"
@@ -400,13 +382,8 @@ def main():
         shutil.copy("config.yaml", f"{save_dir}/config.yaml")
         print(f"   [OK] 配置文件已複製到: {save_dir}/config.yaml")
 
-    except Exception as e:
-        print(f"   [ERR] 回調設置失敗: {e}")
-        return
-
-    # 6. 開始訓練
-    print("[*] 步驟 6/6: 開始訓練")
-    try:
+        # 6. 開始訓練
+        print("[*] 步驟 6/6: 開始訓練")
         total_timesteps = config.get('training', {}).get('total_timesteps', 100000)
 
         success = train_model(
@@ -417,8 +394,8 @@ def main():
         )
 
         if success:
-            print("\n🎉 訓練流程全部完成！")
-            print(f"📁 模型保存位置: {save_dir}")
+            print("\n[OK] 訓練流程全部完成！")
+            print(f"   模型保存位置: {save_dir}")
 
             # 生成訓練監控圖表
             try:
@@ -430,7 +407,7 @@ def main():
                     smooth_window=10
                 )
             except Exception as e:
-                print(f"⚠️ 圖表生成失敗: {e}")
+                print(f"[WARN] 圖表生成失敗: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -440,17 +417,21 @@ def main():
             print("   3. 在測試集上評估模型")
             print("   4. 如果表現良好，可以進行回測")
         else:
-            print("\n⚠️ 訓練未正常完成，請檢查上述錯誤信息")
+            print("\n[WARN] 訓練未正常完成，請檢查上述錯誤信息")
 
     except Exception as e:
-        print(f"   [ERR] 訓練失敗: {e}")
+        print(f"\n[ERR] 訓練流程發生錯誤: {e}")
         import traceback
         traceback.print_exc()
-        return
 
-    # 清理
-    env.close()
-    print("\n[OK] 環境已關閉")
+    finally:
+        # 確保環境一定被關閉（避免 SubprocVecEnv 子進程殘留）
+        if env is not None:
+            try:
+                env.close()
+                print("\n[OK] 環境已關閉")
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

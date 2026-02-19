@@ -131,7 +131,9 @@ class TradingEnv(gym.Env):
             self.feature_aggregator.precompute_all_features(self.df, verbose=True)
 
         # === 預計算 volatility_regime 數組（供低波動持倉獎勵使用）===
-        self._vol_regime_values = self.feature_aggregator.volume_analyzer._volatility_regime_cache
+        # volatility_regime 在 feature_cache 的 index 24（feature_aggregator 組裝順序）
+        # 使用 _feature_cache 而非 volume_analyzer cache，因為 precomputed_features 模式下後者為 None
+        self._vol_regime_values = self.feature_aggregator._feature_cache[:, 24]
 
         # === 獎勵參數 (v8.0：盈虧信號 + 品質獎勵 + 頻率懲罰) ===
         self.reward_config = reward_config or {}
