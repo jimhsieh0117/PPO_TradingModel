@@ -41,7 +41,7 @@ ppo:
 
   # 學習參數
   learning_rate: 0.0001          # 學習率（v5: 0.0002 → 0.00015 穩定學習）
-  n_steps: 4096                   # 更新頻率（每 2048 steps 更新一次）- v8.1: 4096 → 2048 回退，CPU 上更快迭代
+  n_steps: 2048                   # 更新頻率（每 2048 steps 更新一次）- v8.1: 4096 → 2048 回退，CPU 上更快迭代
   batch_size: 64                 # 批次大小（GPU 優化）
 
   n_epochs: 8                      # 每次更新訓練的輪數（v8.1: 6 → 8 折中值）
@@ -67,7 +67,7 @@ ppo:
 
 # ==================== LSTM 配置 ====================
 lstm:
-  enabled: true                    # true = RecurrentPPO, false = 普通 PPO
+  enabled: false                    # true = RecurrentPPO, false = 普通 PPO
   lstm_hidden_size: 128            # LSTM 隱藏層大小
   n_lstm_layers: 1                 # LSTM 層數
 
@@ -75,7 +75,7 @@ lstm:
 training:
   # Episode 設定
   episode_length: 480            # Episode 長度（1440 steps = 24 小時）
-  total_timesteps: 1300000        # 總訓練步數
+  total_timesteps: 2500000        # 總訓練步數
 
   # 日誌與保存
   log_interval: 10                # 每 N 個 episode 記錄一次
@@ -113,8 +113,8 @@ reward:
   rapid_reentry_threshold: 3       # 重新開倉閾值（步）
   episode_profit_bonus: 100        # Episode 結算獎勵縮放（+5% episode → +5.0 bonus）
   # === 空倉機會成本 ===
-  idle_penalty_enabled: true         # 啟用空倉機會成本
-  idle_penalty_atr_threshold: 0.5    # 觸發門檻：bar 變動 > 0.5x ATR
+  idle_penalty_enabled: false         # 啟用空倉機會成本
+  idle_penalty_atr_threshold: 10    # 觸發門檻：bar 變動 > 0.5x ATR
   idle_penalty_scale: 0.3            # 懲罰縮放（小值，避免過度交易）
   idle_penalty_cooldown: 5           # 平倉後 N 步內不觸發
 
