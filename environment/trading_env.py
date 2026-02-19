@@ -130,6 +130,9 @@ class TradingEnv(gym.Env):
             print("[TradingEnv] Precomputing features...")
             self.feature_aggregator.precompute_all_features(self.df, verbose=True)
 
+        # === 預計算 volatility_regime 數組（供低波動持倉獎勵使用）===
+        self._vol_regime_values = self.feature_aggregator.volume_analyzer._volatility_regime_cache
+
         # === 獎勵參數 (v8.0：盈虧信號 + 品質獎勵 + 頻率懲罰) ===
         self.reward_config = reward_config or {}
 
@@ -149,6 +152,10 @@ class TradingEnv(gym.Env):
         self.idle_penalty_atr_threshold = float(self.reward_config.get('idle_penalty_atr_threshold', 0.5))
         self.idle_penalty_scale = float(self.reward_config.get('idle_penalty_scale', 0.3))
         self.idle_penalty_cooldown = int(self.reward_config.get('idle_penalty_cooldown', 5))
+
+        # === 低波動持倉獎勵 ===
+        self.low_vol_hold_bonus = float(self.reward_config.get('low_vol_hold_bonus', 0.0))
+        self.low_vol_threshold = float(self.reward_config.get('low_vol_threshold', 0.3))
 
         # 夏普比率相關（用於統計追蹤，不用於獎勵）
         self.sharpe_window = int(self.reward_config.get('sharpe_window', 60))
@@ -690,6 +697,12 @@ class TradingEnv(gym.Env):
                     if move_ratio > self.idle_penalty_atr_threshold:
                         penalty = (move_ratio - self.idle_penalty_atr_threshold) * self.idle_penalty_scale
                         reward -= min(penalty, 1.0)
+
+        # === 低波動持倉獎勵（鼓勵在低波動期耐心等待）===
+        if self.position == 0 and self.low_vol_hold_bonus > 0:
+            vol_regime = self._vol_regime_values[self.current_step]
+            if vol_regime < self.low_vol_threshold:
+                reward += self.low_vol_hold_bonus
 
         # === v8.0 新增：頻繁交易懲罰（抑制無效交易）===
         if trade_executed and action in [1, 2]:  # 開倉動作

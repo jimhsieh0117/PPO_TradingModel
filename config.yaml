@@ -117,6 +117,9 @@ reward:
   idle_penalty_atr_threshold: 10    # 觸發門檻：bar 變動 > 0.5x ATR
   idle_penalty_scale: 0.3            # 懲罰縮放（小值，避免過度交易）
   idle_penalty_cooldown: 5           # 平倉後 N 步內不觸發
+  # === 低波動持倉獎勵 ===
+  low_vol_hold_bonus: 0.005          # 低波動空倉每步獎勵（鼓勵在低波動期耐心等待）
+  low_vol_threshold: 0.3             # volatility_regime < 此值時觸發（ATR 在近 480 根的 30 百分位以下）
 
 # ==================== ICT 特徵參數 ====================
 features:
