@@ -50,7 +50,7 @@ Action Space: Discrete(4)
 }
 ```
 
-### 狀態空間特徵（28 維 = 23 ICT + 5 持倉狀態）
+### 狀態空間特徵（31 維 = 26 市場特徵 + 5 持倉狀態）
 
 #### 1. 市場結構 (Market Structure) - 3 個
 - `trend_state`, `structure_signal`, `bars_since_structure_change`
@@ -77,50 +77,74 @@ Action Space: Discrete(4)
 - `hour_sin`: sin(2π × hour/24)，捕捉亞洲/歐美時段週期
 - `hour_cos`: cos(2π × hour/24)
 
-#### 9. 持倉狀態 - 5 個
+#### 9. 市場 Regime（v0.8 新增）- 3 個
+- `adx_normalized`: ADX(14) / 100，趨勢強度 [0, 1]（>0.4 = 強趨勢，<0.2 = 盤整）
+- `volatility_regime`: ATR 在過去 480 根 K 線中的相對位置 [0, 1]（rolling min/max 正規化）
+- `trend_strength`: (close - EMA200) / ATR，裁切到 [-1, 1]（正 = 多頭趨勢，負 = 空頭趨勢）
+
+#### 10. 持倉狀態 - 5 個
 - `position_state`: 持倉方向 {-1, 0, 1}
 - `floating_pnl_pct`: 浮動盈虧百分比
 - `holding_time_norm`: 持倉時間正規化 (0~1)
 - `distance_to_stop_loss`: 距止損距離 (0~1)
 - `equity_change_pct`: Episode 權益變化
 
-**總計：28 個特徵** ✅
+**總計：31 個特徵（26 市場 + 5 持倉）** ✅
 
 ---
 
-## 💰 獎勵函數設計 (v9.0)
+## 💰 獎勵函數設計 (v9.0+)
 
 ### 當前參數設定
 ```yaml
 reward:
-  pnl_reward_scale: 500        # 已實現盈虧縮放（主導信號）
-  floating_reward_scale: 30    # v9: 120→30 大幅降低，避免壓倒已實現 PnL
-  stop_loss_extra_penalty: 3.0 # 止損額外懲罰
-  holding_bonus_max: 0.0       # v9: 移除
-  rapid_reentry_penalty: 0.0   # v9: 移除，手續費即為天然懲罰
+  pnl_reward_scale: 700           # 已實現盈虧縮放（主導信號，含滑點後調高）
+  take_profit_multiplier: 1.3     # 止盈獎勵倍數（盈利平倉 × 1.3，虧損 × 1.0）
+  floating_reward_scale: 30       # 浮動盈虧縮放（v9: 120→30，已實現 PnL 主導）
+  stop_loss_extra_penalty: 3.5    # 止損額外懲罰
+  holding_bonus_max: 1.5          # 盈利持倉品質獎勵（持倉30步達最大值）
+  holding_bonus_steps: 30         # 達到最大獎勵的持倉步數
+  rapid_reentry_penalty: 0.0      # v9: 移除，手續費即為天然懲罰
+  episode_profit_bonus: 100       # Episode 結算獎勵縮放
+  # === 空倉機會成本（可選）===
+  idle_penalty_enabled: false     # 啟用空倉機會成本
+  idle_penalty_atr_threshold: 10  # 觸發門檻：bar 變動 > Nx ATR
+  idle_penalty_scale: 0.3         # 懲罰縮放（小值，避免過度交易）
+  idle_penalty_cooldown: 5        # 平倉後 N 步內不觸發
+  # === 低波動持倉獎勵（可選）===
+  low_vol_hold_bonus: 0.0         # 低波動空倉每步獎勵
+  low_vol_threshold: 0.3          # volatility_regime < 此值時觸發
 ```
 
 ### 獎勵公式
 ```python
 # 平倉時：已實現盈虧獎勵（主要信號）
-reward = (realized_pnl / initial_balance) * 500
+if profit:
+    reward = (realized_pnl / balance) * 700 * 1.3  # 止盈 1.3x
+else:
+    reward = (realized_pnl / balance) * 700 * 1.0  # 止損 1.0x
 
 # 每步（持倉時）：浮動盈虧信號（輔助，權重低）
 reward += floating_pnl_pct * 30
 
 # 止損懲罰
-if stop_loss: reward -= 3.0
+if stop_loss: reward -= 3.5
+
+# 盈利持倉品質獎勵（鼓勵持有盈利倉位）
+if in_profit and holding_time <= 30:
+    reward += 1.5 * (holding_time / 30)
 
 # EMA Reward Normalization（v9 重新啟用）
 reward = normalize_reward(reward)  # 穩定 critic target
 ```
 
-### v9.0 設計原則
-- ✅ 已實現 PnL 為主導信號（pnl_reward_scale=500）
+### 設計原則
+- ✅ 已實現 PnL 為主導信號（pnl_reward_scale=700）
 - ✅ 浮動獎勵僅為輔助（30，之前 120 導致 7:1 失衡）
-- ✅ 移除人工 shaping（holding_bonus, rapid_reentry_penalty）
+- ✅ 止盈不對稱倍數（1.3x）鼓勵讓利潤奔跑
 - ✅ 啟用 EMA reward normalization 穩定 value network
 - ✅ 手續費作為天然交易頻率約束
+- ✅ 空倉機會成本可選啟用（解決 WFA 零交易 fold 問題）
 
 ---
 
@@ -131,6 +155,7 @@ reward = normalize_reward(reward)  # 穩定 critic target
 |------|---------|----------|------|
 | 深度學習 | PyTorch | >= 2.0 | 神經網絡後端 |
 | 強化學習 | Stable-Baselines3 | >= 2.0 | PPO 算法實現 |
+| LSTM 支援 | sb3-contrib | >= 2.0 | RecurrentPPO（LSTM 策略） |
 | 環境接口 | Gymnasium | >= 0.29 | RL 環境標準 |
 | 數據獲取 | binance-connector-python | latest | 幣安 API |
 | 回測框架 | backtesting.py | latest | 策略回測 |
@@ -143,6 +168,27 @@ reward = normalize_reward(reward)  # 穩定 critic target
 - ✅ 2025 年持續維護
 - ✅ 內建 Callback 系統
 - ✅ Hugging Face 團隊，安全可靠
+
+### LSTM 模式（v0.8 新增）
+
+透過 `config.yaml` 中 `lstm.enabled: true` 切換：
+
+| 模式 | Policy | 說明 |
+|------|--------|------|
+| MLP（默認） | `MlpPolicy` | 標準 PPO，只看靜態快照 |
+| LSTM | `MlpLstmPolicy` | RecurrentPPO，有時間記憶，能感知 regime 轉換 |
+
+```yaml
+lstm:
+  enabled: false        # true = RecurrentPPO, false = 普通 PPO
+  lstm_hidden_size: 128
+  n_lstm_layers: 1
+```
+
+**注意**：
+- LSTM 比 MLP 慢約 2-3x
+- 回測時需正確傳遞 LSTM hidden state（`strategy.py` 已處理）
+- `n_steps × n_envs % batch_size == 0` 必須成立
 
 ---
 
@@ -163,20 +209,20 @@ _determine_missing_ranges()  → 比較已有 vs 需求，找出缺口
 _download_and_merge()        → 僅下載缺少部分，合併為單一 parquet
     ↓
 _ensure_processed_data()     → 檢查 data/processed/ 快取（data_hash + feature_config_hash）
-    ↓                          快取命中 → 直接載入；未命中 → 計算 20 ICT 特徵
+    ↓                          快取命中 → 直接載入；未命中 → 計算 26 市場特徵
 ensure_data_ready()          → 按 test_start_date 分割 train/test
 ```
 
 **關鍵 API**（`utils/data_pipeline.py`）：
 | 函式 | 用途 | 使用者 |
 |------|------|--------|
-| `ensure_data_ready(config)` | 返回 `(train_df, test_df)`，含 OHLCV + 20 特徵 | `train.py`, `run_backtest.py` |
+| `ensure_data_ready(config)` | 返回 `(train_df, test_df)`，含 OHLCV + 26 特徵 | `train.py`, `run_backtest.py` |
 | `load_full_data(config)` | 返回完整 DataFrame（不分割） | `wfa.py` |
-| `extract_features(df)` | 從 DataFrame 提取 `np.ndarray [n, 20]` | `train.py`, `wfa.py` |
+| `extract_features(df)` | 從 DataFrame 提取 `np.ndarray [n, 26]` | `train.py`, `wfa.py` |
 
 **處理後資料格式**：
 - 檔案：`data/processed/BTCUSDT_1m.parquet`（~150-200 MB）
-- 欄位：`timestamp` + 6 OHLCV + 20 ICT 特徵 = 27 欄
+- 欄位：`timestamp` + 6 OHLCV + 26 市場特徵 = 33 欄
 - 快取驗證：`data/processed/BTCUSDT_1m.meta.json`（data_hash + feature_config_hash）
 
 **增量下載行為**：
@@ -186,25 +232,28 @@ ensure_data_ready()          → 按 test_start_date 分割 train/test
 
 **數據概況**：
 - **數據來源**：Binance Futures API (永續合約)
-- **訓練數據**：5 個月歷史數據（~216,000 根 1分K）
-- **測試數據**：1 個月回測數據（~43,200 根 1分K）
-- **數據分割**：時間序列分割，避免未來洩漏
+- **全部數據**：2020-01-01 ~ 2026-02-14（~3,220,000 根 1分K）
+- **訓練數據**：2020-01-01 ~ 2024-12-31（~2,630,000 根 1分K）
+- **測試數據**：2025-01-01 ~ 2026-02-14（~590,000 根 1分K）
+- **數據分割**：時間序列分割（`test_start_date`），避免未來洩漏
 
-### 訓練設置 (v9.0 配置)
+### 訓練設置（當前配置）
 | 參數 | 值 | 說明 |
 |------|-----|------|
 | Episode 長度 | 480 steps | 8 小時 = 1 個訓練回合 |
+| 總訓練步數 | 2,500,000 | ~1M 為最佳檢查點 |
 | 更新頻率 | 2048 steps | PPO 更新間隔 |
-| 學習率 | 0.00015 | 穩定學習 |
+| 學習率 | 0.0001 | 穩定學習 |
 | Batch Size | 64 | 小批量訓練 |
 | N epochs | 8 | 每次更新的訓練輪數 |
 | Gamma | 0.95 | 折扣因子 |
 | GAE Lambda | 0.95 | 優勢估計參數 |
-| Entropy Coef | 0.2 | 探索係數 |
-| VF Coef | 0.5 | v9: 2.0→0.5 恢復默認，避免 value loss 主導 |
+| Entropy Coef | 0.1 | 探索係數 |
+| VF Coef | 0.5 | v9: 2.0→0.5 恢復默認 |
 | 手續費 | 0.04% | Taker 費率（必須啟用）|
 | 並行環境 | 6 | SubprocVecEnv |
-| 網路架構 | 256×256 | MlpPolicy |
+| 網路架構 | 128×128 | MlpPolicy / MlpLstmPolicy |
+| LSTM | 可選 | config `lstm.enabled`，128 hidden，1 層 |
 
 ### 訓練過程監控指標 ⭐（專業級）
 
@@ -379,6 +428,33 @@ plots/
 
 ---
 
+### WFA 分析演進 (2026-02-20)
+
+#### 訓練步數對 WFA 的決定性影響
+
+| WFA Run | total_timesteps/fold | 盈利 fold | 零交易 fold | avg Sharpe | 結論 |
+|---------|---------------------|-----------|------------|------------|------|
+| wfa_043646 | 1,000,000 | 4/29 (13.8%) | **20/29** | -3.42 | 完全失敗，模型學會不交易 |
+| **wfa_101954** | **3,000,000** | **12/29 (41.4%)** | **4/29** | **0.55** | **顯著改善，但仍未達標** |
+
+> 單純增加訓練步數（1M → 3M），盈利 fold 從 4 個跳到 12 個，零交易從 20 個降至 4 個。
+
+#### 最新 WFA（wfa_20260220_101954）- 各時期表現
+
+| 時期 | fold | 報酬 | Sharpe | 交易/天 | 診斷 |
+|------|------|------|--------|---------|------|
+| 2021 牛市（Q1-Q2） | 1-3 | +15～+21% | 7～15 | 22～45 | ✅ 趨勢市場表現最佳 |
+| 2021 波動期（Q3-Q4） | 4-7 | -1.3～+1.1% | -1～+0.9 | 39～67 | ⚠️ 交易頻率過高，損益接近零 |
+| 2022 熊市回調 | 8-9 | +0.9～+3.1% | 1.2～4.2 | 31～40 | ✅ 仍能盈利 |
+| 2022-2023 低波動 | 10-13 | -0.4～+0.6% | -1.4～+3.9 | 2～16 | ⚠️ 交易頻率大幅降低，報酬微薄 |
+| 2023 橫盤期 | 14-16 | -0.5～-1.5% | -7.7～-3.5 | 4～11 | ❌ WR 34-35%，策略失效 |
+| 2023-2024 轉折期 | 17-19 | 0～-3.9% | NaN～-5.0 | 0～2.8 | ❌ 零交易或嚴重虧損 |
+| 2024 初期 | 20-22 | -1.9～0% | -5.0～NaN | 0～3.2 | ❌ 仍無法適應 2024 市場 |
+| 2024 末牛市 | 23-24 | +1.4～+3.6% | 2.8～5.1 | 0.7～7.7 | ✅ 大幅降低頻率，精準交易 |
+| 2025 年 | 25-29 | -3.3～0% | -3.1～NaN | 0～1.9 | ❌ 未來數據期，策略尚未泛化 |
+
+---
+
 ## 📁 專案結構
 
 ```
@@ -389,20 +465,21 @@ PPO_TradingModel/
 │
 ├── data/                          # 數據目錄
 │   ├── raw/                       # 原始 OHLCV parquet（增量下載管理）
-│   ├── processed/                 # 處理後數據（OHLCV + 20 ICT 特徵 parquet + meta.json）
+│   ├── processed/                 # 處理後數據（OHLCV + 26 市場特徵 parquet + meta.json）
 │   ├── cache/                     # 舊版特徵快取（feature_cache.py 使用，strategy.py fallback）
 │   └── download_data.py           # Binance API 數據下載器
 │
 ├── environment/                   # Gymnasium 環境
 │   ├── __init__.py
-│   ├── trading_env.py             # 主環境類
+│   ├── trading_env.py             # 主環境類（31 維觀察空間）
 │   └── features/                  # 特徵計算模塊
 │       ├── __init__.py
+│       ├── feature_aggregator.py  # 特徵聚合器（26 維市場特徵組裝）
 │       ├── market_structure.py    # 市場結構特徵
 │       ├── order_blocks.py        # Order Blocks 檢測
 │       ├── fvg.py                 # Fair Value Gaps
 │       ├── liquidity.py           # 流動性檢測
-│       └── volume.py              # 成交量特徵
+│       └── volume.py              # 成交量 + ATR + Regime 特徵
 │
 ├── agent/                         # PPO 代理
 │   ├── __init__.py
@@ -505,16 +582,33 @@ PPO_TradingModel/
 3. **市場環境變化**：訓練數據若遇極端行情可能失效
 4. **ICT 主觀性**：Order Block / FVG 定義有多種解釋
 
+### 歷史重大 Bug（已修復）
+1. **Config key 不匹配** (v0.8 修復)：`feature_aggregator.py` 讀 `market_structure_lookback` / `order_block_lookback`，但 config.yaml 定義為 `structure_lookback` / `ob_lookback`。所有 v0.7 及之前的模型都使用了默認 lookback 值（50/20），而非 config 中設定的 180。
+2. **policy_kwargs 未傳遞** (v0.8 修復)：`train.py` 和 `wfa.py` 從未將 `policy_network` / `value_network` 傳給 `PPO()`。所有 v0.7 及之前的模型都使用 SB3 默認的 `[64, 64]` 網路架構，而非 config 中設定的 `[128, 128]`。
+
 ### 建議改進方向
 - 加入更長時間框架（30m, 1h）
-- 使用 ATR 動態止損替代固定百分比
-- 實現追蹤止損（trailing stop）
-- 加入最大持倉時間限制
+- ~~使用 ATR 動態止損替代固定百分比~~ ✅ v0.6 已實現
+- ~~實現追蹤止損（trailing stop）~~ ✅ v0.6 已實現
+- 加入最大持倉時間限制（詳見「當前瓶頸診斷」）
 - 多幣種訓練（BTC, ETH）提高泛化能力
+- WFA 通過率優化（目前 41.4% 盈利 fold，需 67%；詳見「當前瓶頸診斷」）
 
 ---
 
 ## 📝 版本記錄
+
+- **v0.8** (2026-02-20): 市場 Regime 特徵 + LSTM 支援 + Bug 修復
+  - ✅ 新增 3 個市場 Regime 特徵：`adx_normalized`、`volatility_regime`、`trend_strength`
+  - ✅ 觀察空間更新：28 維 → 31 維（26 市場特徵 + 5 持倉狀態）
+  - ✅ LSTM/RecurrentPPO 支援：config `lstm.enabled` 切換 MLP/LSTM，train.py + wfa.py + strategy.py 同步
+  - ✅ 新增 `sb3-contrib` 依賴（RecurrentPPO）
+  - ✅ 空倉機會成本懲罰機制（`idle_penalty_*` 參數，可選啟用）
+  - ✅ 低波動持倉獎勵機制（`low_vol_hold_bonus`，可選啟用）
+  - ✅ **修復 config key 不匹配 bug**：`feature_aggregator.py` 讀 `market_structure_lookback` 但 config 定義為 `structure_lookback`，導致所有 lookback 設定被靜默忽略、永遠使用默認值 50/20
+  - ✅ **修復 policy_kwargs 未傳遞 bug**：train.py/wfa.py 從未將 `policy_network`/`value_network` 傳給 PPO()，所有舊模型用 SB3 默認 [64, 64]
+  - ✅ 效能優化：`volatility_regime` 計算從 O(n × window) rolling rank 改為 O(n) rolling min/max
+  - ⚠️ 所有舊模型不相容（觀察空間維度變更 + 特徵計算修正），需重新訓練
 
 - **v0.7** (2026-02-17): 修復特徵正規化縮放問題（ATR 正規化取代價格百分比）
   - ✅ 修復距離特徵價格相依問題：`/ current_price * 100` → `/ ATR`
@@ -577,6 +671,59 @@ PPO_TradingModel/
 
 ---
 
+## 🔍 當前瓶頸診斷（2026-02-20）
+
+> 截至最新 WFA（wfa_20260220_101954），模型的核心問題已從「無法交易」升級為「在特定市場 Regime 策略失效」。以下是系統性診斷與下一步方向。
+
+### 問題：特定市場 Regime 下策略完全失效
+
+模型在 29 個 WFA fold 中表現呈現**強烈的 Regime 相依性**：
+
+```
+強趨勢市場（2021 牛市）   → Sharpe 7~15，表現極佳
+熊市回調                  → Sharpe 1~4，仍能盈利
+橫盤低波動（2023）         → WR 34%，策略幾乎無效
+高波動快速行情（2024 Q1） → 零交易或大幅虧損
+```
+
+### 根本原因分析
+
+| 問題現象 | 診斷 | 嚴重度 |
+|---------|------|-------|
+| 4 個 fold 零交易（17, 22, 25, 27） | 訓練數據以 2021 牛市為主，模型無法識別 2023-2025 市場特徵 | 高 |
+| 2023 WR 跌至 34-35% | ICT 訊號在低波動橫盤中假突破多，止損頻繁 | 高 |
+| 晚期 fold 持倉時間拉長至 50-92 bars | 模型困惑於進出場時機，被動等待導致長時間曝險 | 中 |
+| fold 19 連虧 27 次（WR 22.8%） | 2024 年初 BTC 劇烈行情，ATR 止損倍數設定過大 | 中 |
+| 早期 fold 交易頻率過高（40-67 次/天） | 2021 市場趨勢明顯，模型過度交易 | 低 |
+
+### 改進方向（優先序）
+
+1. **啟用 `idle_penalty_enabled: true`（scale 0.2-0.3）**
+   - 目標：解決剩餘 4 個零交易 fold
+   - 風險：可能略微增加高頻交易
+
+2. **加入最大持倉時間限制（max_holding_steps ~60 bars）**
+   - 目標：避免晚期 fold 持倉 50-92 bars 的被動式持倉
+   - 實作：在 `trading_env.py` 的 step 中超時強制平倉
+
+3. **ATR 止損倍數條件化（高波動期縮小到 1.5x）**
+   - 目標：解決 fold 19 大幅連虧問題（2024 BTC 劇烈波動）
+   - 可結合 `volatility_regime` 特徵動態調整
+
+4. **訓練數據加權（近期數據加權更高）**
+   - 目標：提升對 2023-2025 市場的泛化能力
+   - 目前訓練以 2020-2024 均等採樣
+
+### WFA 通過門檻現況
+
+| 標準 | 目標 | 最新結果 | 缺口 |
+|------|------|---------|------|
+| 盈利 fold 比例 | ≥ 67% (19/29) | 41.4% (12/29) | 差 7 個 fold |
+| 平均 Sharpe | ≥ 1.3 | 0.55 | 差 0.75 |
+| 最大單 fold 回撤 | ≥ -10% | -3.98% | ✅ 通過 |
+
+---
+
 ## 📧 聯繫與協作
 
 本專案由 Claude (Anthropic) 與用戶協作開發。
@@ -588,4 +735,4 @@ PPO_TradingModel/
 
 ---
 
-*最後更新：2026-02-17*
+*最後更新：2026-02-20*

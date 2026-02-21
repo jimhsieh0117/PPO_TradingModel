@@ -75,7 +75,7 @@ lstm:
 training:
   # Episode 設定
   episode_length: 480            # Episode 長度（1440 steps = 24 小時）
-  total_timesteps: 2500000        # 總訓練步數
+  total_timesteps: 3000000        # 總訓練步數
 
   # 日誌與保存
   log_interval: 10                # 每 N 個 episode 記錄一次
@@ -118,7 +118,7 @@ reward:
   idle_penalty_scale: 0.3            # 懲罰縮放（小值，避免過度交易）
   idle_penalty_cooldown: 5           # 平倉後 N 步內不觸發
   # === 低波動持倉獎勵 ===
-  low_vol_hold_bonus: 0.005          # 低波動空倉每步獎勵（鼓勵在低波動期耐心等待）
+  low_vol_hold_bonus: 0.0          # 低波動空倉每步獎勵（鼓勵在低波動期耐心等待）
   low_vol_threshold: 0.3             # volatility_regime < 此值時觸發（ATR 在近 480 根的 30 百分位以下）
 
 # ==================== ICT 特徵參數 ====================
@@ -157,7 +157,7 @@ wfa:
   train_window_months: 12           # 訓練窗口（月）
   test_window_months: 4             # 測試窗口（月）
   step_months: 2                    # 每次滾動步長（月）
-  total_timesteps: 1000000           # 每個 fold 訓練步數
+  total_timesteps: 3000000           # 每個 fold 訓練步數
   max_parallel_folds: 9             # 同時並行的 fold 數
   n_cpu_per_fold: 1                 # 每個 fold 的環境數（DummyVecEnv）
 

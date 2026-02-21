@@ -64,13 +64,19 @@ class FeatureAggregator:
         self.config = config
 
         # 初始化所有特徵檢測器
+        # 注意：config.yaml 使用短名稱（structure_lookback, ob_lookback），
+        #       舊版 _get_default_config 使用長名稱（market_structure_lookback, order_block_lookback）。
+        #       這裡同時支持兩種命名，優先使用 config.yaml 的短名稱。
         self.market_structure = MarketStructure(
-            lookback=config.get('market_structure_lookback', 50)
+            lookback=config.get('structure_lookback',
+                                config.get('market_structure_lookback', 50))
         )
 
         self.order_blocks = OrderBlockDetector(
-            lookback=config.get('order_block_lookback', 20),
-            min_size_pct=config.get('order_block_min_size', 0.002)
+            lookback=config.get('ob_lookback',
+                                config.get('order_block_lookback', 20)),
+            min_size_pct=config.get('ob_min_size',
+                                    config.get('order_block_min_size', 0.002))
         )
 
         self.fvg_detector = FVGDetector(
@@ -89,6 +95,13 @@ class FeatureAggregator:
         )
 
         self.mtf_analyzer = MultiTimeframeAnalyzer()
+
+        # 印出實際使用的 lookback 參數（方便確認 config 是否正確傳入）
+        print(f"[FeatureAggregator] Lookback config: "
+              f"structure={self.market_structure.lookback}, "
+              f"ob={self.order_blocks.lookback}, "
+              f"fvg_max_age={self.fvg_detector.max_age}, "
+              f"liquidity={self.liquidity_detector.lookback}")
 
         # 特徵名稱列表（用於調試和記錄）
         self.feature_names = self._get_feature_names()

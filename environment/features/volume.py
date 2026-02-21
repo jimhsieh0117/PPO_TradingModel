@@ -155,12 +155,19 @@ class VolumeAnalyzer:
         adx = pd.Series(dx).ewm(alpha=alpha, adjust=False).mean().to_numpy()
         self._adx_normalized_cache = np.clip(adx / 100.0, 0.0, 1.0).astype(np.float32)
 
-        # 8. Volatility Regime: ATR 在過去 480 根 K 線中的百分位 (0~1)
+        # 8. Volatility Regime: ATR 在過去 480 根 K 線中的相對位置 (0~1)
+        # 使用 rolling min/max 正規化，O(n) 時間複雜度
+        # （原 rolling rank 為 O(n × window)，3.2M 行 × 480 窗口 ≈ 15 億次操作）
         volatility_lookback = 480
         atr_series = pd.Series(atr)
-        self._volatility_regime_cache = atr_series.rolling(
-            volatility_lookback, min_periods=1
-        ).rank(pct=True).to_numpy().astype(np.float32)
+        rolling_min = atr_series.rolling(volatility_lookback, min_periods=1).min().to_numpy()
+        rolling_max = atr_series.rolling(volatility_lookback, min_periods=1).max().to_numpy()
+        regime_range = rolling_max - rolling_min
+        self._volatility_regime_cache = np.where(
+            regime_range > 1e-10,
+            (atr - rolling_min) / regime_range,
+            0.5  # 波動率恆定時返回中間值
+        ).astype(np.float32)
 
         # 9. Trend Strength: (close - EMA200) / ATR, 裁切到 [-1, 1]
         ema200 = pd.Series(closes).ewm(span=200, min_periods=1).mean().to_numpy()
