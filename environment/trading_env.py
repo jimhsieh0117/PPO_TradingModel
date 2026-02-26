@@ -106,6 +106,14 @@ class TradingEnv(gym.Env):
         self.atr_stop_multiplier = atr_stop_multiplier
         self.trailing_stop_enabled = trailing_stop
 
+        # === 動態 ATR 止損倍數（根據 volatility_regime 線性插值）===
+        self.dynamic_atr_stop = bool((reward_config or {}).get('dynamic_atr_stop', True))
+        self.atr_stop_high_vol = float((reward_config or {}).get('atr_stop_high_vol', 1.5))
+        self.atr_stop_low_vol = float((reward_config or {}).get('atr_stop_low_vol', 2.5))
+
+        # === 最大持倉時間 ===
+        self.max_holding_steps = int((reward_config or {}).get('max_holding_steps', 360))
+
         # === 特徵提取器 ===
         self.feature_aggregator = FeatureAggregator(
             config=feature_config
@@ -130,9 +138,9 @@ class TradingEnv(gym.Env):
             print("[TradingEnv] Precomputing features...")
             self.feature_aggregator.precompute_all_features(self.df, verbose=True)
 
-        # === 預計算 volatility_regime 數組（供低波動持倉獎勵使用）===
-        # volatility_regime 在 feature_cache 的 index 24（feature_aggregator 組裝順序）
-        # 使用 _feature_cache 而非 volume_analyzer cache，因為 precomputed_features 模式下後者為 None
+        # === 預計算 volatility_regime / adx_normalized 數組 ===
+        # feature_cache 組裝順序：index 23 = adx_normalized, index 24 = volatility_regime
+        self._adx_values = self.feature_aggregator._feature_cache[:, 23]
         self._vol_regime_values = self.feature_aggregator._feature_cache[:, 24]
 
         # === 獎勵參數 (v8.0：盈虧信號 + 品質獎勵 + 頻率懲罰) ===
@@ -158,6 +166,12 @@ class TradingEnv(gym.Env):
         # === 低波動持倉獎勵 ===
         self.low_vol_hold_bonus = float(self.reward_config.get('low_vol_hold_bonus', 0.0))
         self.low_vol_threshold = float(self.reward_config.get('low_vol_threshold', 0.3))
+
+        # === Regime-Conditional Reward ===
+        self.regime_reward_enabled = bool(self.reward_config.get('regime_reward_enabled', True))
+        self.regime_low_vol_threshold = float(self.reward_config.get('regime_low_vol_threshold', 0.3))
+        self.regime_low_adx_threshold = float(self.reward_config.get('regime_low_adx_threshold', 0.2))
+        self.regime_pnl_bonus = float(self.reward_config.get('regime_pnl_bonus', 1.5))
 
         # 夏普比率相關（用於統計追蹤，不用於獎勵）
         self.sharpe_window = int(self.reward_config.get('sharpe_window', 60))
@@ -313,6 +327,12 @@ class TradingEnv(gym.Env):
         # === 1. 更新追蹤止損 → 檢查止損（交易員的生命線）===
         self._update_trailing_stop(current_price)
         stop_loss_triggered = self._check_stop_loss(current_price)
+
+        # === 1.5 最大持倉時間檢查（避免被動式長時間曝險）===
+        if (not stop_loss_triggered
+                and self.position != 0
+                and self.holding_time >= self.max_holding_steps):
+            self._close_position(current_price, reason="max_holding_time")
 
         # === 2. 執行交易動作 ===
         trade_executed = False
@@ -530,10 +550,20 @@ class TradingEnv(gym.Env):
         # 設置止損價格（ATR 動態止損，fallback 到固定百分比）
         atr = self._atr_values[self.current_step]
         if atr > 0:
+            # 動態 ATR 倍數：根據 volatility_regime 線性插值
+            # vol_regime=0 → low_vol(2.5x), vol_regime=1 → high_vol(1.5x)
+            if self.dynamic_atr_stop:
+                vol_regime = self._vol_regime_values[self.current_step]
+                effective_multiplier = (self.atr_stop_low_vol
+                                        + (self.atr_stop_high_vol - self.atr_stop_low_vol)
+                                        * vol_regime)
+            else:
+                effective_multiplier = self.atr_stop_multiplier
+
             if direction == 1:  # 多倉止損在下方
-                self.stop_loss_price = current_price - self.atr_stop_multiplier * atr
+                self.stop_loss_price = current_price - effective_multiplier * atr
             else:  # 空倉止損在上方
-                self.stop_loss_price = current_price + self.atr_stop_multiplier * atr
+                self.stop_loss_price = current_price + effective_multiplier * atr
         else:
             # ATR 不可用（warmup 期），使用固定百分比
             if direction == 1:
@@ -662,6 +692,19 @@ class TradingEnv(gym.Env):
                 reward = realized_return * self.pnl_reward_scale * self.take_profit_multiplier
             else:
                 reward = realized_return * self.pnl_reward_scale
+
+            # === Regime-Conditional 獎勵調節 ===
+            # 在橫盤低波動期：盈利交易額外獎勵（精準出手），虧損交易加重懲罰（抑制假突破）
+            if self.regime_reward_enabled:
+                vol_regime = self._vol_regime_values[self.current_step]
+                adx = self._adx_values[self.current_step]
+                is_choppy = (vol_regime < self.regime_low_vol_threshold
+                             and adx < self.regime_low_adx_threshold)
+                if is_choppy:
+                    if self.last_realized_pnl > 0:
+                        reward *= self.regime_pnl_bonus   # 精準出手獎勵 (×1.5)
+                    else:
+                        reward *= 1.3                     # 假突破懲罰加重 (×1.3)
 
             # === v8.0 新增：盈利交易品質獎勵（鼓勵讓利潤奔跑）===
             if self.last_realized_pnl > 0:

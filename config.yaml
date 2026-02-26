@@ -42,7 +42,7 @@ ppo:
   # 學習參數
   learning_rate: 0.0001          # 學習率（v5: 0.0002 → 0.00015 穩定學習）
   n_steps: 2048                   # 更新頻率（每 2048 steps 更新一次）- v8.1: 4096 → 2048 回退，CPU 上更快迭代
-  batch_size: 64                 # 批次大小（GPU 優化）
+  batch_size: 128                 # 批次大小（GPU 優化）
 
   n_epochs: 8                      # 每次更新訓練的輪數（v8.1: 6 → 8 折中值）
 
@@ -59,15 +59,15 @@ ppo:
 
   # 神經網絡架構
   policy_network:
-    - 128                         # 第一層神經元數
+    - 256                         # 第一層神經元數
     - 128                         # 第二層神經元數
   value_network:
-    - 128
+    - 256
     - 128
 
 # ==================== LSTM 配置 ====================
 lstm:
-  enabled: false                    # true = RecurrentPPO, false = 普通 PPO
+  enabled: false                     # true = RecurrentPPO, false = 普通 PPO
   lstm_hidden_size: 128            # LSTM 隱藏層大小
   n_lstm_layers: 1                 # LSTM 層數
 
@@ -120,6 +120,16 @@ reward:
   # === 低波動持倉獎勵 ===
   low_vol_hold_bonus: 0.0          # 低波動空倉每步獎勵（鼓勵在低波動期耐心等待）
   low_vol_threshold: 0.3             # volatility_regime < 此值時觸發（ATR 在近 480 根的 30 百分位以下）
+  # === Regime-Conditional Reward (方案 A) ===
+  regime_reward_enabled: true          # 啟用 Regime 感知獎勵
+  regime_low_vol_threshold: 0.3        # volatility_regime < 此值視為低波動
+  regime_low_adx_threshold: 0.2        # adx_normalized < 此值視為無趨勢
+  regime_pnl_bonus: 1.5                # 低波動期盈利交易 reward 倍數（×1.5）
+  # === Dynamic Stop Loss + Max Holding (方案 B) ===
+  dynamic_atr_stop: true               # 啟用 volatility-adaptive ATR 止損倍數
+  atr_stop_high_vol: 1.5               # 高波動期 ATR 倍數（更緊止損）
+  atr_stop_low_vol: 2.5                # 低波動期 ATR 倍數（更寬止損）
+  max_holding_steps: 360               # 最大持倉時間（360 bars = 6 小時）
 
 # ==================== ICT 特徵參數 ====================
 features:
