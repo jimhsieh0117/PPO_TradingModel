@@ -8,7 +8,7 @@ trading:
 
   # 槓桿與倉位
   leverage: 1                     # 槓桿倍數
-  position_size_pct: 1.0          # 每次開倉使用資金比例（100%）
+  position_size_pct: 0.99         # 每次開倉使用資金比例（100%）
   max_positions: 1                # 最多同時持倉數
 
   # 風險管理
@@ -41,8 +41,8 @@ ppo:
 
   # 學習參數
   learning_rate: 0.0001          # 學習率（v5: 0.0002 → 0.00015 穩定學習）
-  n_steps: 2048                   # 更新頻率（每 2048 steps 更新一次）- v8.1: 4096 → 2048 回退，CPU 上更快迭代
-  batch_size: 128                 # 批次大小（GPU 優化）
+  n_steps: 2048                   # 更新頻率（每 2048 steps 更新一次）
+  batch_size: 64                  # WFA 關鍵：batch_size=64 → 32 minibatch/update（比256多4x梯度更新）
 
   n_epochs: 8                      # 每次更新訓練的輪數（v8.1: 6 → 8 折中值）
 
@@ -53,7 +53,7 @@ ppo:
   # PPO 特定參數
   clip_range: 0.2                 # PPO Clip 範圍（v5: 0.23 → 0.2 標準值）
   clip_range_vf: 0.2             # Value Function Clip（null = 不裁剪）
-  ent_coef: 0.1                    # 熵係數（v8.1: 0.1 → 0.2 恢復探索，避免過早收斂）
+  ent_coef: 0.1                     # 熵係數（WFA 關鍵：0.07 導致模型收斂到不交易，必須 >= 0.1）
   vf_coef: 0.5                    # Value Function 係數（v9: 2.0 → 0.5 恢復默認，避免 value loss 主導梯度）
   max_grad_norm: 0.5              # 梯度裁剪
 
@@ -75,7 +75,7 @@ lstm:
 training:
   # Episode 設定
   episode_length: 480            # Episode 長度（1440 steps = 24 小時）
-  total_timesteps: 3000000        # 總訓練步數
+  total_timesteps: 1000000        # 總訓練步數
 
   # 日誌與保存
   log_interval: 10                # 每 N 個 episode 記錄一次
@@ -121,15 +121,15 @@ reward:
   low_vol_hold_bonus: 0.0          # 低波動空倉每步獎勵（鼓勵在低波動期耐心等待）
   low_vol_threshold: 0.3             # volatility_regime < 此值時觸發（ATR 在近 480 根的 30 百分位以下）
   # === Regime-Conditional Reward (方案 A) ===
-  regime_reward_enabled: true          # 啟用 Regime 感知獎勵
+  regime_reward_enabled: false          # 啟用 Regime 感知獎勵
   regime_low_vol_threshold: 0.3        # volatility_regime < 此值視為低波動
   regime_low_adx_threshold: 0.2        # adx_normalized < 此值視為無趨勢
   regime_pnl_bonus: 1.5                # 低波動期盈利交易 reward 倍數（×1.5）
   # === Dynamic Stop Loss + Max Holding (方案 B) ===
-  dynamic_atr_stop: true               # 啟用 volatility-adaptive ATR 止損倍數
+  dynamic_atr_stop: false               # 啟用 volatility-adaptive ATR 止損倍數
   atr_stop_high_vol: 1.5               # 高波動期 ATR 倍數（更緊止損）
   atr_stop_low_vol: 2.5                # 低波動期 ATR 倍數（更寬止損）
-  max_holding_steps: 360               # 最大持倉時間（360 bars = 6 小時）
+  max_holding_steps: 9999               # 最大持倉時間（360 bars = 6 小時）
 
 # ==================== ICT 特徵參數 ====================
 features:
@@ -164,11 +164,11 @@ backtest:
 
 # ==================== Walk Forward Analysis ====================
 wfa:
-  train_window_months: 12           # 訓練窗口（月）
-  test_window_months: 4             # 測試窗口（月）
-  step_months: 2                    # 每次滾動步長（月）
-  total_timesteps: 3000000           # 每個 fold 訓練步數
-  max_parallel_folds: 9             # 同時並行的 fold 數
+  train_window_months: 6           # 訓練窗口（月）
+  test_window_months: 1             # 測試窗口（月）
+  step_months: 1                    # 每次滾動步長（月）
+  total_timesteps: 2000000           # 每個 fold 訓練步數
+  max_parallel_folds: 6             # 同時並行的 fold 數
   n_cpu_per_fold: 1                 # 每個 fold 的環境數（DummyVecEnv）
 
   # 通過標準

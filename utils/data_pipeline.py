@@ -66,6 +66,9 @@ FEATURE_COLUMNS = [
     'adx_normalized',
     'volatility_regime',
     'trend_strength',
+    # Long-term Regime (2)
+    'atr_long_ratio',
+    'volume_long_ratio',
 ]
 
 

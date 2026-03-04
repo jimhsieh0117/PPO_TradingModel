@@ -178,7 +178,7 @@ def _run_single_fold(args: tuple) -> Dict:
                     df=train_df,
                     initial_balance=backtest_cfg.get("initial_capital", 1_000_000),
                     leverage=trading_cfg.get("leverage", 1),
-                    position_size_pct=trading_cfg.get("position_size_pct", 1.0),
+                    position_size_pct=trading_cfg.get("position_size_pct", 0.15),
                     stop_loss_pct=trading_cfg.get("stop_loss_pct", 0.015),
                     max_daily_drawdown=trading_cfg.get("daily_drawdown_limit", 0.10),
                     trading_fee=trading_cfg.get("taker_fee", 0.0004),
@@ -268,7 +268,7 @@ def _run_single_fold(args: tuple) -> Dict:
         PPOTradingStrategy.model_path = str(best_path)
         PPOTradingStrategy.feature_config = config.get("features", {})
         PPOTradingStrategy.position_size_pct = float(
-            trading_cfg.get("position_size_pct", 1.0)
+            trading_cfg.get("position_size_pct", 0.15)
         )
         PPOTradingStrategy.stop_loss_pct = float(
             trading_cfg.get("stop_loss_pct", 0.015)
@@ -345,6 +345,22 @@ def aggregate_results(
             "reason": "All folds failed",
             "total_folds": len(fold_metrics),
             "completed_folds": 0,
+            "failed_folds": len(failed),
+            "profitable_folds": 0,
+            "profitable_ratio": 0.0,
+            "avg_return_pct": 0.0,
+            "median_return_pct": 0.0,
+            "best_return_pct": 0.0,
+            "worst_return_pct": 0.0,
+            "total_return_pct": 0.0,
+            "avg_sharpe": 0.0,
+            "avg_win_rate_pct": 0.0,
+            "avg_trades_per_day": 0.0,
+            "worst_drawdown_pct": 0.0,
+            "checks": {},
+            "fold_details": [],
+            "fold_errors": [{"fold_id": m["fold_id"], "error": m.get("error", "")}
+                            for m in failed],
         }
 
     def _safe(vals):

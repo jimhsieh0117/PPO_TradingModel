@@ -180,14 +180,17 @@ class TradingEnv(gym.Env):
         # 動作空間: 0=平倉, 1=做多, 2=做空, 3=持有
         self.action_space = spaces.Discrete(4)
 
-        # 觀察空間: 31 維 = 26 市場特徵 + 5 持倉狀態特徵
-        # ICT 20 原始 + atr_normalized + hour_sin + hour_cos + adx + vol_regime + trend_str = 26
+        # 觀察空間: N 維 = 市場特徵 + 5 持倉狀態特徵（動態計算）
+        # 市場特徵由 FeatureAggregator 定義
         # 持倉: position_state, floating_pnl_pct, holding_time_norm,
         #        distance_to_stop_loss, equity_change_pct = 5
+        n_market_features = self.feature_aggregator.get_state_dimension()
+        n_position_features = 5
+        obs_dim = n_market_features + n_position_features
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(31,),
+            shape=(obs_dim,),
             dtype=np.float32
         )
 

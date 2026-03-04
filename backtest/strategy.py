@@ -186,7 +186,7 @@ class PPOTradingStrategy(Strategy):
                     if new_sl < self._current_sl:
                         self._current_sl = new_sl
 
-        # === 組合 31 維觀察空間：26 維市場特徵 + 5 維持倉狀態 ===
+        # === 組合觀察空間：N 維市場特徵 + 5 維持倉狀態 ===
         market_features = self._feature_cache[current_idx]
         position_features = self._get_position_features(price)
         state = np.concatenate([market_features, position_features])

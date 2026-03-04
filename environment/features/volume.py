@@ -44,10 +44,12 @@ class VolumeAnalyzer:
         self._price_position_cache = None
         self._zone_class_cache = None
         self._atr_cache = None              # 原始 ATR（價格單位，供環境止損用）
-        self._atr_normalized_cache = None   # ATR / close（正規化，供特徵用）
+        self._atr_normalized_cache = None   # ATR / close * 1000（正規化，供特徵用）
         self._adx_normalized_cache = None   # ADX(14) / 100, [0, 1]
-        self._volatility_regime_cache = None  # ATR 歷史百分位, [0, 1]
+        self._volatility_regime_cache = None  # ATR / EMA(ATR, 2880), [0, 1]
         self._trend_strength_cache = None   # (close - EMA200) / ATR, [-1, 1]
+        self._atr_long_ratio_cache = None   # ATR / EMA(ATR, 14400), [0, 5]
+        self._volume_long_ratio_cache = None # volume / EMA(volume, 2880), [0, 5]
 
     def precompute_all_features(self, df: pd.DataFrame) -> None:
         """
@@ -97,6 +99,7 @@ class VolumeAnalyzer:
         vwap = rolling_tp_volume.to_numpy() / np.where(rolling_volume.to_numpy() > 0, rolling_volume.to_numpy(), 1.0)
         vwap_momentum = (closes - vwap) / np.where(vwap > 0, vwap, 1.0) * 100
         vwap_momentum = np.nan_to_num(vwap_momentum, nan=0.0)
+        vwap_momentum = np.clip(vwap_momentum, -10.0, 10.0)  # 防止異常值（如早期數據）
         self._vwap_momentum_cache = vwap_momentum.astype(np.float32)
 
         # 4. 向量化計算 Price Position in Range
@@ -133,8 +136,10 @@ class VolumeAnalyzer:
         )
         atr = pd.Series(true_range).rolling(atr_period, min_periods=1).mean().to_numpy()
         self._atr_cache = atr.astype(np.float64)
-        # 正規化：ATR / close（衡量相對波動率）
-        self._atr_normalized_cache = (atr / np.maximum(closes, 1e-10)).astype(np.float32)
+        # 正規化：ATR / close * 1000（放大到可學習範圍 ~0.6-2.0）
+        self._atr_normalized_cache = np.clip(
+            (atr / np.maximum(closes, 1e-10)) * 1000, 0.0, 5.0
+        ).astype(np.float32)
 
         # 7. ADX (Average Directional Index, 14 期)
         adx_period = 14
@@ -155,24 +160,32 @@ class VolumeAnalyzer:
         adx = pd.Series(dx).ewm(alpha=alpha, adjust=False).mean().to_numpy()
         self._adx_normalized_cache = np.clip(adx / 100.0, 0.0, 1.0).astype(np.float32)
 
-        # 8. Volatility Regime: ATR 在過去 480 根 K 線中的相對位置 (0~1)
-        # 使用 rolling min/max 正規化，O(n) 時間複雜度
-        # （原 rolling rank 為 O(n × window)，3.2M 行 × 480 窗口 ≈ 15 億次操作）
-        volatility_lookback = 480
+        # 8. Volatility Regime: ATR / EMA(ATR, 2880)，反映當前波動率相對長期均值
+        # >1 = 高波動期，<1 = 低波動期，clip 到 [0, 1] (除以 2)
+        volatility_ema_span = 2880  # ~48 小時
         atr_series = pd.Series(atr)
-        rolling_min = atr_series.rolling(volatility_lookback, min_periods=1).min().to_numpy()
-        rolling_max = atr_series.rolling(volatility_lookback, min_periods=1).max().to_numpy()
-        regime_range = rolling_max - rolling_min
-        self._volatility_regime_cache = np.where(
-            regime_range > 1e-10,
-            (atr - rolling_min) / regime_range,
-            0.5  # 波動率恆定時返回中間值
+        atr_long_ema = atr_series.ewm(span=volatility_ema_span, min_periods=1).mean().to_numpy()
+        volatility_ratio = atr / np.maximum(atr_long_ema, 1e-10)
+        self._volatility_regime_cache = np.clip(
+            volatility_ratio / 2.0, 0.0, 1.0
         ).astype(np.float32)
 
         # 9. Trend Strength: (close - EMA200) / ATR, 裁切到 [-1, 1]
         ema200 = pd.Series(closes).ewm(span=200, min_periods=1).mean().to_numpy()
         deviation = (closes - ema200) / np.maximum(atr, 1e-10)
         self._trend_strength_cache = np.clip(deviation / 5.0, -1.0, 1.0).astype(np.float32)
+
+        # 10. ATR Long Ratio: ATR / EMA(ATR, 14400)，10日尺度波動率比
+        atr_very_long_ema = atr_series.ewm(span=14400, min_periods=1).mean().to_numpy()
+        self._atr_long_ratio_cache = np.clip(
+            atr / np.maximum(atr_very_long_ema, 1e-10), 0.0, 5.0
+        ).astype(np.float32)
+
+        # 11. Volume Long Ratio: volume / EMA(volume, 2880)，48h 量比
+        vol_long_ema = pd.Series(volumes).ewm(span=2880, min_periods=1).mean().to_numpy()
+        self._volume_long_ratio_cache = np.clip(
+            volumes / np.maximum(vol_long_ema, 1e-10), 0.0, 5.0
+        ).astype(np.float32)
 
         self._cache_valid = True
 

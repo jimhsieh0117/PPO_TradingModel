@@ -23,7 +23,7 @@ from typing import List, Dict, Tuple
 class FVGDetector:
     """Fair Value Gap 檢測器（向量化優化版）"""
 
-    def __init__(self, min_size_pct: float = 0.001, max_age: int = 100, min_size_atr: float = 0.3):
+    def __init__(self, min_size_pct: float = 0.001, max_age: int = 300, min_size_atr: float = 0.1):
         """
         初始化 FVG 檢測器
 

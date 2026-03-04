@@ -162,6 +162,9 @@ class FeatureAggregator:
             'adx_normalized',
             'volatility_regime',
             'trend_strength',
+            # Long-term Regime (2)
+            'atr_long_ratio',
+            'volume_long_ratio',
         ]
 
     def precompute_all_features(self, df: pd.DataFrame, verbose: bool = True) -> None:
@@ -264,6 +267,10 @@ class FeatureAggregator:
         self._feature_cache[:, 23] = self.volume_analyzer._adx_normalized_cache
         self._feature_cache[:, 24] = self.volume_analyzer._volatility_regime_cache
         self._feature_cache[:, 25] = self.volume_analyzer._trend_strength_cache
+
+        # Long-term Regime (2 features)
+        self._feature_cache[:, 26] = self.volume_analyzer._atr_long_ratio_cache
+        self._feature_cache[:, 27] = self.volume_analyzer._volume_long_ratio_cache
 
         self._cache_valid = True
         if verbose:
