@@ -1,0 +1,13 @@
+# === PPO Trading Model - Windows 依賴 ===
+# 包含共用依賴 + CUDA 版 PyTorch
+#
+# 安裝方式（建議透過 setup_env.py 自動安裝）：
+#   pip install -r requirements_windows.txt
+
+# 共用依賴
+-r requirements_base.txt
+
+# PyTorch (CUDA 12.1) - 支援 NVIDIA GPU 加速
+# 如果沒有 NVIDIA GPU，也可以用 CPU 版：pip install torch>=2.0.0
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch>=2.0.0

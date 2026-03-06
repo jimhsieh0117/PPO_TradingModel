@@ -28,13 +28,7 @@ from stable_baselines3.common.utils import set_random_seed
 from environment.trading_env import TradingEnv
 from agent.callbacks import TrainingMetricsCallback
 from utils.visualization import plot_training_metrics
-
-
-def load_config(config_path: str = "config.yaml") -> dict:
-    """載入配置文件"""
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-    return config
+from utils.config_utils import load_config
 
 
 def load_training_data(config: dict) -> pd.DataFrame:
@@ -435,4 +429,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.set_start_method("spawn", force=True)
     main()

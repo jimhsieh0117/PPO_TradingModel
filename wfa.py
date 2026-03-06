@@ -32,14 +32,7 @@ from typing import Dict, List, Tuple, Optional
 _project_root = Path(__file__).parent
 sys.path.insert(0, str(_project_root))
 
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-def load_config(config_path: str = "config.yaml") -> dict:
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+from utils.config_utils import load_config
 
 
 # ---------------------------------------------------------------------------
@@ -683,4 +676,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.set_start_method("spawn", force=True)
     main()

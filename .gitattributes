@@ -1,0 +1,24 @@
+# 統一 line endings 為 LF（跨平台開發：Windows + macOS）
+# Git 會在 checkout 時根據平台自動轉換
+
+* text=auto
+
+# 原始碼檔案：統一 LF
+*.py text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.csv text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.sh text eol=lf
+
+# 二進位檔案：不做轉換
+*.zip binary
+*.npy binary
+*.parquet binary
+*.png binary
+*.jpg binary
+*.xls binary
+*.xlsx binary

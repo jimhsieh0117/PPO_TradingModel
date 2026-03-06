@@ -1,0 +1,11 @@
+# === PPO Trading Model - macOS 依賴 ===
+# 包含共用依賴 + CPU/MPS 版 PyTorch
+#
+# 安裝方式（建議透過 setup_env.py 自動安裝）：
+#   pip install -r requirements_mac.txt
+
+# 共用依賴
+-r requirements_base.txt
+
+# PyTorch (CPU/MPS) - Apple Silicon 支援 MPS 加速
+torch>=2.0.0

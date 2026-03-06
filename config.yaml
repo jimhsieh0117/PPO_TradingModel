@@ -1,4 +1,30 @@
-# PPO Trading Model - 全局配置文件
+# ==============================================================================
+# PPO Trading Model - 全局配置文件（共用版）
+# ==============================================================================
+#
+# 📌 使用方式：
+#   此檔案為所有開發者共用的基礎配置，透過 git 追蹤。
+#   請勿直接在此修改平台相關或實驗性參數。
+#
+# 🔧 自訂參數：
+#   1. 建立 config_local.yaml（不被 git 追蹤）
+#   2. 只需寫入你想覆蓋的參數，例如：
+#        ppo:
+#          device: "mps"
+#        misc:
+#          n_cpu: 8
+#   3. 程式啟動時會自動合併 config_local.yaml 覆蓋此檔的值
+#
+# 🔄 同步流程（將好參數同步回共用配置）：
+#   1. 在 config_local.yaml 中調好參數並驗證效果
+#   2. 執行 python sync_config.py 將變更合併回此檔
+#   3. git commit + push 讓其他開發者取得最新參數
+#
+# ⚡ 快速開始：
+#   python setup_env.py    # 自動安裝環境 + 生成 config_local.yaml
+#   python train.py        # 開始訓練
+#
+# ==============================================================================
 
 # ==================== 交易參數設定 ====================
 trading:
@@ -37,7 +63,7 @@ data:
 # ==================== PPO 超參數 ====================
 ppo:
   # 設備設定
-  device: "cpu"                  # 訓練設備：cpu 或 cuda（GPU）
+  device: "auto"                   # 訓練設備：auto（自動偵測 cuda/mps/cpu）、或手動指定
 
   # 學習參數
   learning_rate: 0.0001          # 學習率（v5: 0.0002 → 0.00015 穩定學習）
@@ -126,9 +152,9 @@ reward:
   regime_low_adx_threshold: 0.2        # adx_normalized < 此值視為無趨勢
   regime_pnl_bonus: 1.5                # 低波動期盈利交易 reward 倍數（×1.5）
   # === Dynamic Stop Loss + Max Holding (方案 B) ===
-  dynamic_atr_stop: false               # 啟用 volatility-adaptive ATR 止損倍數
-  atr_stop_high_vol: 1.5               # 高波動期 ATR 倍數（更緊止損）
-  atr_stop_low_vol: 2.5                # 低波動期 ATR 倍數（更寬止損）
+  dynamic_atr_stop: false                # 啟用 volatility-adaptive ATR 止損倍數
+  atr_stop_high_vol: 1.0               # 高波動期 ATR 倍數（更緊止損）
+  atr_stop_low_vol: 2.0                # 低波動期 ATR 倍數（更寬止損）
   max_holding_steps: 9999               # 最大持倉時間（360 bars = 6 小時）
 
 # ==================== ICT 特徵參數 ====================

@@ -1,0 +1,39 @@
+# === PPO Trading Model - 共用依賴 ===
+# 此檔包含所有平台共用的依賴，不含 PyTorch
+# PyTorch 由平台專用的 requirements_windows.txt / requirements_mac.txt 指定
+
+# === 強化學習 ===
+stable-baselines3>=2.0.0
+sb3-contrib>=2.0.0
+gymnasium>=0.29.0
+
+# === 數據處理 ===
+numpy>=1.24.0
+pandas>=2.0.0
+pyarrow>=14.0.0
+
+# === 加密貨幣數據獲取 ===
+binance-connector>=3.7.0
+binance-futures-connector>=4.1.0
+
+# === 回測框架 ===
+backtesting>=0.3.3
+
+# === 技術指標計算 ===
+ta>=0.11.0
+
+# === 視覺化 ===
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.14.0
+
+# === 配置文件處理 ===
+pyyaml>=6.0
+
+# === 日誌與監控 ===
+tensorboard>=2.13.0
+tqdm>=4.65.0
+
+# === 工具庫 ===
+scipy>=1.10.0
+scikit-learn>=1.3.0

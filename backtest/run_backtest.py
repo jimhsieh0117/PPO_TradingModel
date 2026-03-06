@@ -6,19 +6,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import pandas as pd
-import yaml
 from backtesting import Backtest
 
+# Ensure project root is importable
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from backtest.strategy import PPOTradingStrategy
-
-
-def load_config(config_path: str) -> Dict:
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+from utils.config_utils import load_config
 
 
 def find_latest_csv(data_dir: Path, pattern: str) -> Path:
