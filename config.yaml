@@ -28,7 +28,6 @@
 
 # ==================== 交易參數設定 ====================
 trading:
-  symbol: "BTCUSDT"              # 交易標的
   market_type: "futures"          # 市場類型：futures (永續合約)
   timeframe: "1m"                 # 時間框架：1分K
 

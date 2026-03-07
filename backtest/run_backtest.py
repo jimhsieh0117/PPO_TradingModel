@@ -297,8 +297,15 @@ def run_backtest_pipeline(config: dict, run_dir) -> dict:
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as file:
         json.dump(metrics, file, indent=2, ensure_ascii=True)
 
+    # 輸出 backtesting.py 完整統計（詳細資料，往上滑可查閱）
     print("\n" + "=" * 60)
-    print("  Backtest Results")
+    print("  backtesting.py Full Stats")
+    print("=" * 60)
+    stats_display = stats.drop(labels=["_strategy", "_trades", "_equity_curve"], errors="ignore")
+    print(stats_display.to_string())
+
+    print("\n" + "=" * 60)
+    print("  Backtest Results (Summary)")
     print("=" * 60)
     print(f"  Period:          {metrics['backtest_start']} ~ {metrics['backtest_end']}")
     print(f"  Duration:        {metrics['backtest_duration_days']:.1f} days")

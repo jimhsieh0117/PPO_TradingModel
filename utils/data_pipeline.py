@@ -209,6 +209,9 @@ def _download_and_merge(
     for start_str, end_str in missing_ranges:
         print(f"\n   [DOWNLOAD] Fetching {symbol} {interval}: {start_str} ~ {end_str}")
         df = downloader.download_by_date_range(start_str, end_str)
+        if df is None or df.empty:
+            print(f"   [DOWNLOAD] No data returned for {start_str} ~ {end_str}, skipping.")
+            continue
         if df.index.name == 'timestamp':
             df = df.reset_index()
         df['timestamp'] = pd.to_datetime(df['timestamp'])
@@ -219,6 +222,12 @@ def _download_and_merge(
     if existing_df is not None and not existing_df.empty:
         all_parts.append(existing_df)
     all_parts.extend(new_dfs)
+
+    if not all_parts:
+        raise RuntimeError(
+            f"No data available for {symbol} {interval} in the requested date ranges. "
+            "The symbol may not exist or may not have data in the specified period."
+        )
 
     merged = pd.concat(all_parts, ignore_index=True)
     merged = merged.drop_duplicates(subset='timestamp', keep='last')
@@ -366,7 +375,7 @@ def _get_processed_data(config: dict) -> pd.DataFrame:
     trading_config = config.get('trading', {})
     feature_config = config.get('features', {})
 
-    symbol = data_config.get('symbol', trading_config.get('symbol', 'BTCUSDT'))
+    symbol = data_config.get('symbol', 'BTCUSDT')
     interval = trading_config.get('timeframe', '1m')
     start_date = data_config.get('start_date', '2020-01-01 00:00:00')
     end_date = data_config.get('end_date', '2025-12-31 23:59:59')

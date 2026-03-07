@@ -367,7 +367,7 @@ def main():
         print("[*] 步驟 5/6: 設置訓練回調")
         # 創建保存目錄（帶時間戳）
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        symbol = config.get('data', {}).get('symbol', config.get('trading', {}).get('symbol', 'BTCUSDT'))
+        symbol = config.get('data', {}).get('symbol', 'BTCUSDT')
         save_dir = f"models/run_{symbol}_{timestamp}"
 
         callbacks = setup_callbacks(save_dir, config)

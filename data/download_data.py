@@ -115,6 +115,33 @@ class BinanceDataDownloader:
             end_time.strftime('%Y-%m-%d')
         )
 
+    def find_earliest_available_date(self, start_ms: int, end_ms: int) -> int:
+        """
+        探測交易對最早有數據的時間戳（毫秒）。
+
+        做法：向 API 查詢從 start_ms 到 end_ms 的第 1 根 K 線；
+        若返回空，代表整個區間都無數據；
+        若返回的時間戳晚於 start_ms，則以該時間戳為實際起點。
+
+        Returns:
+            實際最早可用時間戳（毫秒），若無數據則返回 None
+        """
+        try:
+            klines = self.client.klines(
+                symbol=self.symbol,
+                interval=self.interval,
+                startTime=start_ms,
+                endTime=end_ms,
+                limit=1,
+            )
+        except Exception as e:
+            print(f"   ⚠️  探測最早可用日期時發生錯誤: {e}")
+            return None
+
+        if not klines:
+            return None
+        return int(klines[0][0])
+
     def download_by_date_range(self, start_date: str, end_date: str):
         """
         下載指定日期範圍的歷史數據
@@ -129,12 +156,25 @@ class BinanceDataDownloader:
         start_time = datetime.strptime(start_date, '%Y-%m-%d')
         end_time = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1) - timedelta(seconds=1)
 
-        total_days = (end_time - start_time).days
-        print(f"\n📊 開始下載 {self.symbol} 數據...")
-        print(f"   日期範圍: {start_date} ~ {end_date} ({total_days} 天)")
-
         start_ms = int(start_time.timestamp() * 1000)
         end_ms = int(end_time.timestamp() * 1000)
+
+        # 探測實際最早可用日期（避免代幣上市前無數據導致大量失敗）
+        actual_start_ms = self.find_earliest_available_date(start_ms, end_ms)
+        if actual_start_ms is None:
+            print(f"\n❌ {self.symbol} 在 {start_date} ~ {end_date} 區間完全沒有數據，請確認交易對是否正確。")
+            return self._klines_to_dataframe([])
+
+        if actual_start_ms > start_ms:
+            actual_start_dt = datetime.fromtimestamp(actual_start_ms / 1000)
+            print(f"\n⚠️  {self.symbol} 在 {start_date} 尚無數據。")
+            print(f"   自動調整起始日期為: {actual_start_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+            start_ms = actual_start_ms
+            start_time = actual_start_dt
+
+        total_days = (end_time - start_time).days
+        print(f"\n📊 開始下載 {self.symbol} 數據...")
+        print(f"   日期範圍: {start_time.strftime('%Y-%m-%d')} ~ {end_date} ({total_days} 天)")
 
         estimated_klines = total_days * 24 * 60
         print(f"   預計 K 線數: ~{estimated_klines:,} 根\n")
