@@ -567,7 +567,8 @@ def main() -> None:
 
     # ---- Create WFA output directory ----
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    wfa_dir = Path(config.get("training", {}).get("model_save_dir", "models")) / f"wfa_{ts}"
+    symbol = config.get('data', {}).get('symbol', config.get('trading', {}).get('symbol', 'BTCUSDT'))
+    wfa_dir = Path(config.get("training", {}).get("model_save_dir", "models")) / f"wfa_{symbol}_{ts}"
     wfa_dir.mkdir(parents=True, exist_ok=True)
 
     # Save full data & features to disk for worker processes

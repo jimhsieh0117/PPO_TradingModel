@@ -190,36 +190,35 @@ def build_metrics(stats: pd.Series, trades: pd.DataFrame, data_index: pd.Index =
     return metrics
 
 
-def main() -> None:
+def run_backtest_pipeline(config: dict, run_dir) -> dict:
+    """
+    執行完整回測流程，可被外部直接呼叫（不依賴 argparse）。
+
+    Args:
+        config: 已載入並合併的配置字典
+        run_dir: 模型所在目錄（會自動尋找 best model，輸出至 run_dir/backtest_results）
+
+    Returns:
+        metrics dict
+    """
     import time
 
-    parser = argparse.ArgumentParser(description="Run PPO backtest with backtesting.py")
-    parser.add_argument("--config", default="config.yaml", help="Config file path")
-    parser.add_argument("--data", help="Test CSV path (optional)")
-    parser.add_argument("--model", help="Model path (optional)")
-    parser.add_argument("--run-dir", help="Run directory for outputs (optional)")
-    parser.add_argument("--output-dir", help="Output directory (optional)")
-    args = parser.parse_args()
+    run_dir = Path(run_dir)
 
-    print("=" * 60)
+    print("\n" + "=" * 60)
     print("  PPO Trading Model - Backtest")
     print("=" * 60)
 
-    config = load_config(args.config)
-
     print("\n[1/4] Loading test data...")
-    df_raw, data_path = load_test_data(config, args.data)
+    df_raw, data_path = load_test_data(config, None)
     bt_data = normalize_ohlcv(df_raw)
     print(f"      Loaded {len(bt_data):,} bars from {data_path.name}")
 
-    models_dir = Path(config.get("training", {}).get("model_save_dir", "models"))
-    run_dir = Path(args.run_dir) if args.run_dir else find_latest_run_dir(models_dir)
-    model_path = resolve_model_path(run_dir, args.model)
+    model_path = resolve_model_path(run_dir, None)
 
     backtest_config = config.get("backtest", {})
     trading_config = config.get("trading", {})
 
-    # 從 pipeline DataFrame 提取預計算特徵（23 維 ICT 特徵）
     from utils.data_pipeline import extract_features, FEATURE_COLUMNS
     feature_cols_present = [c for c in FEATURE_COLUMNS if c in df_raw.columns]
     if len(feature_cols_present) == len(FEATURE_COLUMNS):
@@ -238,8 +237,9 @@ def main() -> None:
     PPOTradingStrategy.atr_stop_multiplier = float(trading_config.get("atr_stop_multiplier", 2.0))
     PPOTradingStrategy.trailing_stop = bool(trading_config.get("trailing_stop", True))
     PPOTradingStrategy.use_lstm = bool(config.get('lstm', {}).get('enabled', False))
+    PPOTradingStrategy.episode_length = int(config.get('training', {}).get('episode_length', 480))
+    PPOTradingStrategy.max_holding_steps = int(config.get('reward', {}).get('max_holding_steps', 9999))
 
-    # 手續費 + 滑點（backtesting.py 的 commission 為百分比，與滑點單位一致）
     base_commission = float(backtest_config.get("commission", 0.0004))
     slippage = float(trading_config.get("slippage", 0.0))
     effective_commission = base_commission + slippage
@@ -262,7 +262,7 @@ def main() -> None:
     print(f"      Completed in {elapsed:.2f}s ({bars_per_sec:,.0f} bars/sec)")
 
     print("\n[4/4] Saving results...")
-    output_dir = Path(args.output_dir) if args.output_dir else run_dir / "backtest_results"
+    output_dir = run_dir / "backtest_results"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     trades = stats.get("_trades", pd.DataFrame())
@@ -276,7 +276,6 @@ def main() -> None:
 
     if backtest_config.get("plots", True) and not equity_curve.empty:
         import matplotlib.pyplot as plt
-
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.plot(equity_curve.index, equity_curve["Equity"], color="#1f77b4", linewidth=1.5)
         ax.set_title("Equity Curve")
@@ -321,10 +320,21 @@ def main() -> None:
     print(f"  Stop Losses:     {metrics['stop_loss_count']}")
     print("-" * 60)
     print(f"  Backtest Time:   {metrics['backtest_time_sec']:.1f}s ({metrics['bars_per_sec']:,.0f} bars/sec)")
-    print(f"  Data:            {metrics['data_path']}")
-    print(f"  Model:           {metrics['model_path']}")
-    print("=" * 60)
-    print(f"\n  Output: {output_dir}")
+
+    return metrics
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run PPO backtest with backtesting.py")
+    parser.add_argument("--config", default="config.yaml", help="Config file path")
+    parser.add_argument("--run-dir", help="Run directory for outputs (optional)")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    models_dir = Path(config.get("training", {}).get("model_save_dir", "models"))
+    run_dir = Path(args.run_dir) if args.run_dir else find_latest_run_dir(models_dir)
+
+    run_backtest_pipeline(config, run_dir)
 
 
 if __name__ == "__main__":

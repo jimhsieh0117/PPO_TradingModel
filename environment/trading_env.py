@@ -327,9 +327,10 @@ class TradingEnv(gym.Env):
         self.realized_this_step = False
         self.last_realized_pnl = 0.0
 
-        # === 1. 更新追蹤止損 → 檢查止損（交易員的生命線）===
-        self._update_trailing_stop(current_price)
-        stop_loss_triggered = self._check_stop_loss(current_price)
+        # === 1. 先檢查止損（用盤中高低點），觸發後不再更新追蹤止損 ===
+        stop_loss_triggered = self._check_stop_loss()
+        if not stop_loss_triggered:
+            self._update_trailing_stop(current_price)
 
         # === 1.5 最大持倉時間檢查（避免被動式長時間曝險）===
         if (not stop_loss_triggered
@@ -463,24 +464,29 @@ class TradingEnv(gym.Env):
             if new_sl < self.stop_loss_price:
                 self.stop_loss_price = new_sl
 
-    def _check_stop_loss(self, current_price: float) -> bool:
+    def _check_stop_loss(self) -> bool:
         """
-        檢查是否觸發止損
+        檢查是否觸發止損（使用 K 線盤中最高/最低點，與真實合約和 backtesting.py 一致）
 
-        交易員原則：止損是保護本金的防線，絕不能違反！
+        觸發邏輯：
+          - 多倉：K 線最低點 <= stop_loss_price → 以 stop_loss_price 成交（加滑點）
+          - 空倉：K 線最高點 >= stop_loss_price → 以 stop_loss_price 成交（加滑點）
         """
         if self.position == 0:
             return False
 
-        # 多倉止損：價格跌破止損價
-        if self.position == 1 and current_price <= self.stop_loss_price:
-            self._close_position(current_price, reason="stop_loss")
+        low = self._low_prices[self.current_step]
+        high = self._high_prices[self.current_step]
+
+        # 多倉止損：K 線最低點觸及止損價
+        if self.position == 1 and low <= self.stop_loss_price:
+            self._close_position(self.stop_loss_price, reason="stop_loss")
             self.stop_loss_count += 1
             return True
 
-        # 空倉止損：價格突破止損價
-        if self.position == -1 and current_price >= self.stop_loss_price:
-            self._close_position(current_price, reason="stop_loss")
+        # 空倉止損：K 線最高點觸及止損價
+        if self.position == -1 and high >= self.stop_loss_price:
+            self._close_position(self.stop_loss_price, reason="stop_loss")
             self.stop_loss_count += 1
             return True
 
@@ -580,32 +586,31 @@ class TradingEnv(gym.Env):
 
         self.total_trades += 1
 
-    def _close_position(self, current_price: float, reason: str):
+    def _close_position(self, exit_price_raw: float, reason: str):
         """
-        平倉（計算盈虧）
+        平倉（使用開倉時鎖定的持幣數量計算盈虧，與真實合約一致）
 
         Args:
-            current_price: 平倉價格
-            reason: 平倉原因（manual_close, stop_loss, reverse）
+            exit_price_raw: 平倉基準價（止損價或收盤價），滑點在此基礎上加減
+            reason: 平倉原因（manual_close, stop_loss, reverse, max_holding_time）
+
+        修正：使用開倉鎖定的 self.position_size（持幣數），而非以當前 balance 重算倉位
+              確保帳戶虧損後，倉位大小不會縮水，PnL 計算符合真實合約邏輯
         """
         if self.position == 0:
             return
 
-        # 計算盈虧（考慮槓桿 + 滑點）
+        # 計算含滑點的實際成交價
         # 平多（賣出）：成交價偏低；平空（買入）：成交價偏高
         if self.position == 1:  # 平多倉（賣出）
-            exit_price = current_price * (1 - self.slippage)
-            price_change_pct = (exit_price - self.entry_price) / self.entry_price
+            exit_price = exit_price_raw * (1 - self.slippage)
+            pnl = self.position_size * (exit_price - self.entry_price)
         else:  # 平空倉（買入）
-            exit_price = current_price * (1 + self.slippage)
-            price_change_pct = (self.entry_price - exit_price) / self.entry_price
+            exit_price = exit_price_raw * (1 + self.slippage)
+            pnl = self.position_size * (self.entry_price - exit_price)
 
-        # 實際盈虧 = 倉位價值 × 槓桿 × 價格變化百分比
-        position_value = self.balance * self.position_size_pct
-        pnl = position_value * self.leverage * price_change_pct
-
-        # 扣除手續費
-        fee = position_value * self.leverage * self.trading_fee
+        # 手續費 = 平倉名義金額（基準價）× fee rate
+        fee = self.position_size * exit_price_raw * self.trading_fee
         pnl -= fee
 
         # 更新餘額
@@ -632,26 +637,18 @@ class TradingEnv(gym.Env):
 
     def _update_equity(self, current_price: float):
         """
-        更新權益（用於計算回撤）
-
-        交易員視角：權益曲線是評估表現的關鍵
+        更新權益（使用開倉時鎖定的持幣數量計算浮動盈虧，與真實合約一致）
         """
-        # 如果有持倉，計算浮動盈虧
         floating_pnl = 0.0
-        if self.position != 0:
+        if self.position != 0 and self.position_size > 0:
             if self.position == 1:  # 多倉
-                price_change_pct = (current_price - self.entry_price) / self.entry_price
+                floating_pnl = self.position_size * (current_price - self.entry_price)
             else:  # 空倉
-                price_change_pct = (self.entry_price - current_price) / self.entry_price
+                floating_pnl = self.position_size * (self.entry_price - current_price)
 
-            position_value = self.balance * self.position_size_pct
-            floating_pnl = position_value * self.leverage * price_change_pct
-
-        # 更新權益
         self.equity = self.balance + floating_pnl
         self.equity_curve.append(self.equity)
 
-        # 更新峰值權益（用於計算回撤）
         if self.equity > self.peak_equity:
             self.peak_equity = self.equity
 

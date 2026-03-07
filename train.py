@@ -367,7 +367,8 @@ def main():
         print("[*] 步驟 5/6: 設置訓練回調")
         # 創建保存目錄（帶時間戳）
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        save_dir = f"models/run_{timestamp}"
+        symbol = config.get('data', {}).get('symbol', config.get('trading', {}).get('symbol', 'BTCUSDT'))
+        save_dir = f"models/run_{symbol}_{timestamp}"
 
         callbacks = setup_callbacks(save_dir, config)
 
@@ -405,11 +406,15 @@ def main():
                 import traceback
                 traceback.print_exc()
 
-            print("\n下一步：")
-            print("   1. 查看訓練日誌")
-            print("   2. 分析訓練曲線")
-            print("   3. 在測試集上評估模型")
-            print("   4. 如果表現良好，可以進行回測")
+            # 自動執行回測
+            try:
+                print("\n[BACKTEST] 訓練完成，自動執行回測...")
+                from backtest.run_backtest import run_backtest_pipeline
+                run_backtest_pipeline(config, save_dir)
+            except Exception as e:
+                print(f"[WARN] 自動回測失敗: {e}")
+                import traceback
+                traceback.print_exc()
         else:
             print("\n[WARN] 訓練未正常完成，請檢查上述錯誤信息")
 
