@@ -5,7 +5,13 @@
       "Bash(source venv/bin/activate)",
       "Bash(python environment/features/market_structure.py:*)",
       "Bash(dir:*)",
-      "Bash(python -c:*)"
+      "Bash(python -c:*)",
+      "Bash(for dir in run_20260306_191420 run_20260306_190929 run_20260306_190509 run_20260306_184531 run_20260306_182445 run_20260306_181553)",
+      "Bash(do)",
+      "Bash(echo \"=== $dir ===\")",
+      "Read(//Users/jim_hsieh/Documents/GitHub/PPO_TradingModel/models/$dir/backtest_results/**)",
+      "Bash(done)",
+      "Bash(do:*)"
     ]
   }
 }

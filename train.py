@@ -371,10 +371,10 @@ def main():
 
         callbacks = setup_callbacks(save_dir, config)
 
-        # 保存配置文件副本
-        import shutil
-        shutil.copy("config.yaml", f"{save_dir}/config.yaml")
-        print(f"   [OK] 配置文件已複製到: {save_dir}/config.yaml")
+        # 保存合併後的配置文件（base config.yaml + config_local.yaml 覆蓋）
+        with open(f"{save_dir}/config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        print(f"   [OK] 配置文件已保存到: {save_dir}/config.yaml")
 
         # 6. 開始訓練
         print("[*] 步驟 6/6: 開始訓練")

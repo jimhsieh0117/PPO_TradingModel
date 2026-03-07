@@ -579,9 +579,9 @@ def main() -> None:
     # Free memory in main process
     del full_df, full_features
 
-    # Save config snapshot
-    import shutil
-    shutil.copy(args.config, wfa_dir / "config.yaml")
+    # Save config snapshot（保存合併後的配置，含 config_local.yaml 覆蓋）
+    with open(wfa_dir / "config.yaml", "w", encoding="utf-8") as f:
+        yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
     # ---- 4. Run folds in parallel ----
     print(f"\n[4/5] Running {len(folds)} folds"

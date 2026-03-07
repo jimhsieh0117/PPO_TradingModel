@@ -18,6 +18,7 @@ class TrainingMetricsCallback(BaseCallback):
         initial_capital: float,
         max_daily_drawdown: float,
         enable_detailed_logging: bool = True,
+        best_model_rolling_window: int = 20,
         verbose: int = 0,
     ):
         super().__init__(verbose)
@@ -28,11 +29,12 @@ class TrainingMetricsCallback(BaseCallback):
         self.initial_capital = initial_capital
         self.max_daily_drawdown = max_daily_drawdown
         self.enable_detailed_logging = enable_detailed_logging
+        self._rolling_window = best_model_rolling_window
 
         self._file = None
         self._writer = None
         self._headers: List[str] = []
-        self._best_return_pct = float("-inf")
+        self._best_rolling_mean = float("-inf")
 
         self._episode_rewards: List[float] = []
         self._episode_lengths: List[int] = []
@@ -125,8 +127,8 @@ class TrainingMetricsCallback(BaseCallback):
             "timestamp",
             "timesteps",
             "episode",
-            "new_best_return_pct",
-            "previous_best_return_pct",
+            "new_best_rolling_mean",
+            "previous_best_rolling_mean",
             "overwritten_model",
             "best_model_path",
         ]
@@ -145,8 +147,8 @@ class TrainingMetricsCallback(BaseCallback):
             "timestamp": row.get("timestamp"),
             "timesteps": row.get("timesteps"),
             "episode": row.get("episode"),
-            "new_best_return_pct": new_best,
-            "previous_best_return_pct": previous_best,
+            "new_best_rolling_mean": new_best,
+            "previous_best_rolling_mean": previous_best,
             "overwritten_model": overwritten_model,
             "best_model_path": str(self.best_model_path),
         }
@@ -155,24 +157,25 @@ class TrainingMetricsCallback(BaseCallback):
             writer.writerow(data)
 
     def _maybe_save_best(self, row: Dict) -> None:
-        episode_return_pct = row.get("episode_return_pct")
-        sharpe_ratio = row.get("sharpe_ratio")
         max_drawdown = row.get("max_drawdown")
-        if episode_return_pct is None or sharpe_ratio is None or max_drawdown is None:
+        if max_drawdown is None:
             return
-        # v9: 放寬門檻，只保留 drawdown 安全閥（原 sharpe>1.3 導致從未保存）
+        # 安全閥：單 episode 回撤超過 50% 不保存
         if float(max_drawdown) > 0.50:
             return
-
-        current_return = float(episode_return_pct)
-        if current_return <= self._best_return_pct:
+        # 需要足夠的歷史才能計算滾動平均
+        if len(self._episode_return_history) < self._rolling_window:
             return
 
-        previous_best = None if self._best_return_pct == float("-inf") else self._best_return_pct
+        rolling_mean = float(np.mean(self._episode_return_history[-self._rolling_window:]))
+        if rolling_mean <= self._best_rolling_mean:
+            return
+
+        previous_best = None if self._best_rolling_mean == float("-inf") else self._best_rolling_mean
         overwritten_model = str(self.best_model_path) if self.best_model_path.exists() else ""
         self.model.save(str(self.best_model_path))
-        self._best_return_pct = current_return
-        self._log_best_event(row, current_return, previous_best, overwritten_model)
+        self._best_rolling_mean = rolling_mean
+        self._log_best_event(row, rolling_mean, previous_best, overwritten_model)
 
     def _get_logger_value(self, key: str) -> Optional[float]:
         logger = getattr(self.model, "logger", None)
