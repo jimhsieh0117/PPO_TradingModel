@@ -4,29 +4,29 @@
 將所有 ICT 特徵整合成完整的狀態向量供 RL 環境使用
 
 整合的特徵類別：
-1. Market Structure (3 features)
-2. Order Blocks (4 features)
-3. Fair Value Gaps (3 features)
-4. Liquidity (3 features)
-5. Volume & Price (5 features)
-6. Multi-Timeframe (2 features)
+1. Market Structure (3)
+2. Order Blocks (4)
+3. Fair Value Gaps (3)
+4. Liquidity (3)
+5. Volume & Price (5)
+6. Multi-Timeframe (2)
+7. Volatility (1)
+8. Time (2)
+9. Market Regime (3)
+10. Long-term Regime (2)
 
-總計：20 個特徵
+總計：28 個市場特徵（+ 5 持倉狀態 = 33 維觀察空間）
 
 優化：
 - 所有模塊都支持向量化預計算
 - 預計算後查詢 O(1)
 - 使用 NumPy 數組存儲特徵緩存
-
-作者：PPO Trading Team
-日期：2026-01-14
 """
 
 import numpy as np
 import pandas as pd
 from typing import Dict, List
 from pathlib import Path
-from tqdm import tqdm
 
 # 導入所有特徵檢測器
 try:

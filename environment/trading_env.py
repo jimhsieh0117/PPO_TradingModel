@@ -18,6 +18,11 @@ from typing import Dict, Tuple, Optional, Any
 from collections import deque
 
 from environment.features.feature_aggregator import FeatureAggregator
+from utils.data_pipeline import FEATURE_COLUMNS
+
+# 從 FEATURE_COLUMNS 取得特徵索引，避免寫死 magic number
+_IDX_ADX_NORMALIZED = FEATURE_COLUMNS.index('adx_normalized')
+_IDX_VOLATILITY_REGIME = FEATURE_COLUMNS.index('volatility_regime')
 
 
 class TradingEnv(gym.Env):
@@ -31,8 +36,7 @@ class TradingEnv(gym.Env):
         3: 持有 (Hold)
 
     觀察空間:
-        28 維 = 23 ICT 特徵 + 5 持倉狀態特徵
-        (20 原始 ICT + atr_normalized + hour_sin + hour_cos + 5 持倉)
+        N 維 = 市場特徵 + 5 持倉狀態特徵（市場特徵數量由 FeatureAggregator 定義）
 
     止損設計:
         - ATR 動態止損（2x ATR 倍數，適應市場波動）
@@ -139,9 +143,8 @@ class TradingEnv(gym.Env):
             self.feature_aggregator.precompute_all_features(self.df, verbose=True)
 
         # === 預計算 volatility_regime / adx_normalized 數組 ===
-        # feature_cache 組裝順序：index 23 = adx_normalized, index 24 = volatility_regime
-        self._adx_values = self.feature_aggregator._feature_cache[:, 23]
-        self._vol_regime_values = self.feature_aggregator._feature_cache[:, 24]
+        self._adx_values = self.feature_aggregator._feature_cache[:, _IDX_ADX_NORMALIZED]
+        self._vol_regime_values = self.feature_aggregator._feature_cache[:, _IDX_VOLATILITY_REGIME]
 
         # === 獎勵參數 (v8.0：盈虧信號 + 品質獎勵 + 頻率懲罰) ===
         self.reward_config = reward_config or {}
@@ -211,7 +214,6 @@ class TradingEnv(gym.Env):
         self.last_realized_pnl = 0.0
         self.realized_this_step = False
         self.no_position_steps = 0
-        self.no_position_steps = 0
 
         # === 交易統計（交易員最關心的指標）===
         self.total_trades = 0
@@ -240,7 +242,6 @@ class TradingEnv(gym.Env):
         # 改用簡單 clip：穩定、無狀態、不受策略變化影響
         self.normalize_reward = False
         self._reward_clip = 10.0         # Clip raw rewards to [-10, 10]
-        self._reward_step_count = 0
 
     def reset(
         self,
@@ -275,7 +276,6 @@ class TradingEnv(gym.Env):
         self.previous_sharpe = 0.0
         self.last_realized_pnl = 0.0
         self.realized_this_step = False
-        self.no_position_steps = 0
         self.no_position_steps = 0
 
         # 重置交易統計
@@ -782,46 +782,6 @@ class TradingEnv(gym.Env):
         reward = self._reward_clip * math.tanh(reward / self._reward_clip)
 
         return reward
-
-    def _normalize_reward(self, reward: float) -> float:
-        """
-        EMA-based reward normalization (v6 改進)
-
-        優點：
-        1. 更快適應 reward 分布變化
-        2. 不會被早期極端值永久影響
-        3. Warmup 期間返回縮放後的原始值
-        """
-        self._reward_step_count += 1
-        alpha = self._reward_ema_alpha
-
-        # Warmup 期間：收集統計但返回縮放後的原始值
-        if self._reward_step_count <= self._reward_warmup:
-            # 快速初始化 EMA（使用較大的 alpha）
-            init_alpha = 0.1
-            self._reward_ema_mean = (1 - init_alpha) * self._reward_ema_mean + init_alpha * reward
-            delta = reward - self._reward_ema_mean
-            self._reward_ema_var = (1 - init_alpha) * self._reward_ema_var + init_alpha * (delta ** 2)
-            # 返回簡單縮放的值
-            return reward / 100.0  # 假設 reward 範圍約 [-500, 500]
-
-        # 更新 EMA 統計
-        self._reward_ema_mean = (1 - alpha) * self._reward_ema_mean + alpha * reward
-        delta = reward - self._reward_ema_mean
-        self._reward_ema_var = (1 - alpha) * self._reward_ema_var + alpha * (delta ** 2)
-
-        # 計算標準差
-        std = math.sqrt(self._reward_ema_var) if self._reward_ema_var > 0 else 1.0
-        std = max(std, 1e-8)  # 避免除以零
-
-        # 正規化
-        normalized = (reward - self._reward_ema_mean) / std
-
-        # Clip
-        if self._reward_clip is not None:
-            normalized = max(min(normalized, self._reward_clip), -self._reward_clip)
-
-        return float(normalized)
 
     def _check_termination(self) -> bool:
         """

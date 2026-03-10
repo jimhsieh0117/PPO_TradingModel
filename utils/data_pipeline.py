@@ -6,7 +6,7 @@
 2. 計算缺少的日期範圍，僅下載缺少的部分（增量下載）
 3. 合併原始數據 → 計算 ICT 特徵 → 存儲為處理後 Parquet
 4. 後續請求直接從處理後快取載入（透過 data_hash + feature_config_hash 驗證）
-5. 返回包含 OHLCV + 20 ICT 特徵的 DataFrame
+5. 返回包含 OHLCV + 28 市場特徵的 DataFrame
 """
 
 import hashlib
@@ -74,13 +74,13 @@ FEATURE_COLUMNS = [
 
 def extract_features(df: pd.DataFrame) -> np.ndarray:
     """
-    從包含 OHLCV + 特徵的 DataFrame 中提取 20 維特徵數組。
+    從包含 OHLCV + 特徵的 DataFrame 中提取市場特徵數組。
 
     Args:
         df: 含有 FEATURE_COLUMNS 的 DataFrame（由 ensure_data_ready / load_full_data 返回）
 
     Returns:
-        np.ndarray: shape [n_rows, 20]
+        np.ndarray: shape [n_rows, len(FEATURE_COLUMNS)]
     """
     missing = [c for c in FEATURE_COLUMNS if c not in df.columns]
     if missing:
