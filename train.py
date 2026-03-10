@@ -13,6 +13,7 @@ PPO Trading Bot - 訓練入口腳本
 """
 
 import os
+import shutil
 import yaml
 import pandas as pd
 import numpy as np
@@ -391,6 +392,20 @@ def main():
         if success:
             print("\n[OK] 訓練流程全部完成！")
             print(f"   模型保存位置: {save_dir}")
+
+            # 複製 TensorBoard 日誌到模型目錄
+            try:
+                tb_dir = Path(config.get('training', {}).get('tensorboard_log', 'tensorboard'))
+                tb_runs = sorted(tb_dir.glob("PPO_*"), key=lambda p: p.stat().st_mtime)
+                if not tb_runs:
+                    tb_runs = sorted(tb_dir.glob("RecurrentPPO_*"), key=lambda p: p.stat().st_mtime)
+                if tb_runs:
+                    latest_tb = tb_runs[-1]
+                    dest = Path(save_dir) / latest_tb.name
+                    shutil.copytree(latest_tb, dest)
+                    print(f"   [OK] TensorBoard 日誌已複製: {dest}")
+            except Exception as e:
+                print(f"   [WARN] TensorBoard 日誌複製失敗: {e}")
 
             # 生成訓練監控圖表
             try:
