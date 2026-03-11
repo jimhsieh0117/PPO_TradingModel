@@ -294,8 +294,27 @@ def run_backtest_pipeline(config: dict, run_dir) -> dict:
         "backtest_time_sec": elapsed,
         "bars_per_sec": bars_per_sec,
     })
+
+    # 儲存 backtesting.py 完整統計到 metrics.json
+    stats_clean = stats.drop(labels=["_strategy", "_trades", "_equity_curve"], errors="ignore")
+    full_metrics = {}
+    for key, val in stats_clean.items():
+        if isinstance(val, (pd.Timestamp,)):
+            full_metrics[key] = val.isoformat()
+        elif isinstance(val, (pd.Timedelta,)):
+            full_metrics[key] = str(val)
+        elif isinstance(val, float) and (pd.isna(val) or val != val):
+            full_metrics[key] = None
+        elif hasattr(val, 'item'):  # np scalar
+            v = val.item()
+            full_metrics[key] = None if (isinstance(v, float) and pd.isna(v)) else v
+        else:
+            full_metrics[key] = val
+    # 附加自訂摘要指標
+    full_metrics["_custom"] = metrics
+
     with open(output_dir / "metrics.json", "w", encoding="utf-8") as file:
-        json.dump(metrics, file, indent=2, ensure_ascii=True)
+        json.dump(full_metrics, file, indent=2, ensure_ascii=True)
 
     # 輸出 backtesting.py 完整統計（詳細資料，往上滑可查閱）
     print("\n" + "=" * 60)

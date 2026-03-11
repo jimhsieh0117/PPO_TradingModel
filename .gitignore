@@ -90,6 +90,12 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 
+# === Optuna 超參數優化輸出 ===
+optimized_param/*.db
+optimized_param/trial_*/
+optimized_param/best_params.yaml
+optimized_param/optimization_report.html
+
 # === TensorBoard ===
 runs/
 tensorboard_logs/

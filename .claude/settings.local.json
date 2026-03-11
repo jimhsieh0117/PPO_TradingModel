@@ -13,7 +13,9 @@
       "Bash(done)",
       "Bash(do:*)",
       "Bash(python3 -c \"from environment.trading_env import TradingEnv; print\\('Import OK'\\)\")",
-      "Bash(.venv/bin/python -c \"from environment.trading_env import TradingEnv; print\\('Import OK'\\)\")"
+      "Bash(.venv/bin/python -c \"from environment.trading_env import TradingEnv; print\\('Import OK'\\)\")",
+      "WebFetch(domain:skillsmp.com)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

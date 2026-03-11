@@ -31,6 +31,9 @@ pyyaml>=6.0
 tensorboard>=2.13.0
 tqdm>=4.65.0
 
+# === 超參數優化 ===
+optuna>=3.0.0
+
 # === 工具庫 ===
 scipy>=1.10.0
 scikit-learn>=1.3.0
