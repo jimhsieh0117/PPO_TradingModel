@@ -247,9 +247,115 @@ def export_optimization_report(study: optuna.Study, output_dir: Path) -> None:
 # ============================================================
 # 目標函數
 # ============================================================
+def _create_env_direct(train_df, precomputed_features, config, n_cpu):
+    """
+    直接建立訓練環境，跳過 train.py 中的 extract_features 重複計算。
+    使用 DummyVecEnv 避免每 trial spawn 子進程的開銷。
+    """
+    from stable_baselines3.common.vec_env import DummyVecEnv
+    from stable_baselines3.common.utils import set_random_seed
+    from environment.trading_env import TradingEnv
+
+    trading_config = config.get('trading', {})
+    training_config = config.get('training', {})
+    backtest_config = config.get('backtest', {})
+    misc_config = config.get('misc', {})
+
+    seed = misc_config.get('random_seed', None)
+    if seed is not None:
+        set_random_seed(seed)
+
+    n_envs = max(1, n_cpu)
+
+    def make_env(rank: int):
+        def _init():
+            env = TradingEnv(
+                df=train_df,
+                initial_balance=backtest_config.get('initial_capital', 10000.0),
+                leverage=trading_config.get('leverage', 10),
+                position_size_pct=trading_config.get('position_size_pct', 0.15),
+                stop_loss_pct=trading_config.get('stop_loss_pct', 0.015),
+                max_daily_drawdown=trading_config.get('daily_drawdown_limit', 0.10),
+                trading_fee=trading_config.get('taker_fee', 0.0004),
+                slippage=trading_config.get('slippage', 0.0),
+                episode_length=training_config.get('episode_length', 1440),
+                feature_config=config.get('features', {}),
+                reward_config=config.get('reward', {}),
+                precomputed_features=precomputed_features,
+                atr_stop_multiplier=trading_config.get('atr_stop_multiplier', 2.0),
+                trailing_stop=trading_config.get('trailing_stop', True),
+            )
+            if seed is not None:
+                env.reset(seed=seed + rank)
+            return env
+        return _init
+
+    return DummyVecEnv([make_env(i) for i in range(n_envs)])
+
+
+def _run_backtest_fast(config, trial_dir, test_df_cached, bt_data_cached, test_features_cached):
+    """
+    快速回測：使用預載的測試數據，跳過重複的 data I/O 和 feature extraction。
+    """
+    import time as _time
+    from backtesting import Backtest
+    from backtest.strategy import PPOTradingStrategy
+    from backtest.run_backtest import resolve_model_path, build_metrics, normalize_ohlcv
+
+    trial_dir = Path(trial_dir)
+    model_path = resolve_model_path(trial_dir, None)
+
+    trading_config = config.get("trading", {})
+    backtest_config = config.get("backtest", {})
+
+    PPOTradingStrategy.model_path = str(model_path)
+    PPOTradingStrategy.feature_config = config.get("features", {})
+    PPOTradingStrategy.precomputed_features = test_features_cached
+    PPOTradingStrategy.position_size_pct = float(trading_config.get("position_size_pct", 0.15))
+    PPOTradingStrategy.stop_loss_pct = float(trading_config.get("stop_loss_pct", 0.015))
+    PPOTradingStrategy.atr_stop_multiplier = float(trading_config.get("atr_stop_multiplier", 2.0))
+    PPOTradingStrategy.trailing_stop = bool(trading_config.get("trailing_stop", True))
+    PPOTradingStrategy.use_lstm = bool(config.get('lstm', {}).get('enabled', False))
+    PPOTradingStrategy.episode_length = int(config.get('training', {}).get('episode_length', 480))
+    PPOTradingStrategy.max_holding_steps = int(config.get('reward', {}).get('max_holding_steps', 9999))
+
+    base_commission = float(backtest_config.get("commission", 0.0004))
+    slippage = float(trading_config.get("slippage", 0.0))
+    effective_commission = base_commission + slippage
+
+    bt = Backtest(
+        bt_data_cached,
+        PPOTradingStrategy,
+        cash=float(backtest_config.get("initial_capital", 10000)),
+        commission=effective_commission,
+        trade_on_close=True,
+        exclusive_orders=True,
+    )
+
+    stats = bt.run()
+
+    # 儲存 metrics.json（部分 trial 目錄保留時需要）
+    import pandas as pd
+    trades = stats.get("_trades", pd.DataFrame())
+    metrics = build_metrics(stats, trades, bt_data_cached.index)
+
+    output_dir = trial_dir / "backtest_results"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    import json as _json
+    with open(output_dir / "metrics.json", "w", encoding="utf-8") as f:
+        _json.dump(metrics, f, indent=2, ensure_ascii=True)
+
+    return metrics
+
+
 def create_objective(
     base_config: dict,
     train_df,
+    train_features: np.ndarray,
+    test_df,
+    bt_data,
+    test_features: np.ndarray,
     phase: str,
     total_timesteps: int,
     n_cpu: int,
@@ -259,7 +365,7 @@ def create_objective(
     """
     建立 Optuna 目標函數 closure。
 
-    數據在外部載入一次，透過 closure 傳入。
+    所有數據和特徵在外部預算一次，透過 closure 傳入，避免每 trial 重複計算。
     """
 
     # 追蹤 top N 模型分數，用於清理
@@ -286,12 +392,12 @@ def create_objective(
             config["backtest"]["trades_csv"] = False
             config["ppo"]["verbose"] = 0
 
-            # 3. 建立環境
-            from train import create_training_env, create_ppo_model
-
-            env = create_training_env(train_df, config)
+            # 3. 建立環境（使用預算特徵 + DummyVecEnv，無子進程開銷）
+            env = _create_env_direct(train_df, train_features, config, n_cpu)
 
             # 4. 建立模型（verbose=0）
+            from train import create_ppo_model
+
             model = create_ppo_model(env, config)
             model.verbose = 0
 
@@ -307,16 +413,10 @@ def create_objective(
             model_path = trial_dir / "ppo_trading_model_best.zip"
             model.save(str(model_path))
 
-            # 7. 回測評估
-            from backtest.run_backtest import run_backtest_pipeline
-
-            # 靜音回測輸出
-            import io
-            from contextlib import redirect_stdout
-
-            f_null = io.StringIO()
-            with redirect_stdout(f_null):
-                metrics = run_backtest_pipeline(config, trial_dir)
+            # 7. 快速回測（使用預載數據，無重複 I/O）
+            metrics = _run_backtest_fast(
+                config, trial_dir, test_df, bt_data, test_features
+            )
 
             # 8. 計算複合分數
             score = compute_composite_score(metrics)
@@ -450,10 +550,28 @@ def main():
     config = load_config(args.config)
     symbol = config.get("data", {}).get("symbol", "BTCUSDT")
 
-    # 2. 載入數據（只做一次）
-    print("\n[2/4] 載入數據（全局一次）...")
-    train_df, _test_df = ensure_data_ready(config)
+    # 2. 載入數據 + 預算特徵（全局一次）
+    print("\n[2/4] 載入數據與預算特徵（全局一次）...")
+    train_df, test_df = ensure_data_ready(config)
     print(f"  訓練數據: {len(train_df):,} bars")
+    print(f"  測試數據: {len(test_df):,} bars")
+
+    # 預算特徵（避免每 trial 重複計算）
+    import pandas as pd
+    train_features = extract_features(train_df)
+    test_features = extract_features(test_df)
+    print(f"  訓練特徵: {train_features.shape}")
+    print(f"  測試特徵: {test_features.shape}")
+
+    # 預處理回測用 OHLCV（避免每 trial 重複轉換）
+    from backtest.run_backtest import normalize_ohlcv
+    test_df_indexed = test_df.copy()
+    if "timestamp" in test_df_indexed.columns:
+        test_df_indexed["timestamp"] = pd.to_datetime(test_df_indexed["timestamp"], errors="coerce")
+        test_df_indexed = test_df_indexed.set_index("timestamp")
+    test_df_indexed = test_df_indexed.sort_index()
+    bt_data = normalize_ohlcv(test_df_indexed)
+    print(f"  回測 OHLCV: {bt_data.shape}")
 
     # 3. 建立 Optuna Study
     print("\n[3/4] 建立 Optuna Study...")
@@ -504,6 +622,10 @@ def main():
     objective = create_objective(
         base_config=config,
         train_df=train_df,
+        train_features=train_features,
+        test_df=test_df_indexed,
+        bt_data=bt_data,
+        test_features=test_features,
         phase=args.phase,
         total_timesteps=args.timesteps,
         n_cpu=args.n_cpu,

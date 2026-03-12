@@ -16,6 +16,9 @@ pyarrow>=14.0.0
 binance-connector>=3.7.0
 binance-futures-connector>=4.1.0
 
+# === 超參數優化 ===
+optuna>=3.0.0
+
 # === 回測框架 ===
 backtesting>=0.3.3
 

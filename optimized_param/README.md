@@ -51,3 +51,19 @@ python train.py
 # WFA 驗證
 python wfa.py
 ```
+
+## 匯出最佳參數
+```
+1. 自動偵測所有 study_{SYMBOL}_{PHASE}.db
+2. 依序載入 phase1 → phase2 → phase3 最佳參數
+3. 合併（後面 phase 覆蓋前面，例如 phase3 的 ppo.learning_rate 會蓋掉 phase1 的）
+4. 輸出 best_params_ETHUSDT.yaml，巢狀格式直接相容 config_local.yaml
+```
+
+```bash
+# 使用
+python optimized_param/export_best_params.py
+
+# 只匯出特定 symbol
+python optimized_param/export_best_params.py --symbol ETHUSDT
+```
