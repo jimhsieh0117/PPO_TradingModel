@@ -1,0 +1,20 @@
+# Optuna Best Parameters for ETHUSDT
+# phase1_ppo: Trial #39 | Score: 0.7999 | Sharpe: 3.19 | Return: +1263.4%
+# phase2_reward: Trial #6 | Score: 0.7478 | Sharpe: 2.02 | Return: +5300.8%
+# phase3_combined: Trial #9 | Score: 0.7472 | Sharpe: 2.15 | Return: +17750.2%
+#
+# 使用方式：將此檔內容合併到 config_local.yaml 中對應欄位
+
+ppo:
+  learning_rate: 8.629896550328063e-05
+  ent_coef: 0.11465081710095759
+  gamma: 0.9290813836366901
+  n_epochs: 5
+  batch_size: 32
+  vf_coef: 0.8696168419005353
+reward:
+  pnl_reward_scale: 700
+  floating_reward_scale: 35
+  take_profit_multiplier: 1.0650515929852795
+  stop_loss_extra_penalty: 7.642198760773333
+  holding_bonus_max: 2.9140800826863984
