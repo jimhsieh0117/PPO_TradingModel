@@ -1,5 +1,5 @@
 """
-Config 同步腳本 - 將 config_local.yaml 的參數合併回 config.yaml
+Config 同步腳本 - 將 config_local.yaml 的參數合併回 config.yaml（保留註解）
 
 使用場景：
     經過調參實驗找到更好的參數後，用此腳本將 config_local.yaml 的設定
@@ -11,21 +11,12 @@ Config 同步腳本 - 將 config_local.yaml 的參數合併回 config.yaml
     python sync_config.py --dry-run      # 只顯示差異，不修改
 """
 
+import shutil
 import sys
 from pathlib import Path
 
 import yaml
-
-
-def deep_merge(base: dict, override: dict) -> dict:
-    """遞迴合併字典"""
-    result = base.copy()
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
+from ruamel.yaml import YAML
 
 
 def find_diffs(base: dict, override: dict, path: str = "") -> list:
@@ -42,90 +33,105 @@ def find_diffs(base: dict, override: dict, path: str = "") -> list:
     return diffs
 
 
+def update_recursive(target, source):
+    """遞迴更新 ruamel.yaml CommentedMap，只改值不動註解。"""
+    updated = []
+    for key, value in source.items():
+        if key in target:
+            if isinstance(value, dict) and hasattr(target[key], 'items'):
+                updated.extend(update_recursive(target[key], value))
+            else:
+                old_val = target[key]
+                target[key] = value
+                updated.append((key, old_val, value))
+        else:
+            target[key] = value
+            updated.append((key, None, value))
+    return updated
+
+
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="同步 config_local.yaml → config.yaml")
+    parser = argparse.ArgumentParser(description="同步 config_local.yaml → config.yaml（保留註解）")
     parser.add_argument("--yes", "-y", action="store_true", help="直接同步，不詢問")
     parser.add_argument("--dry-run", action="store_true", help="只顯示差異")
     parser.add_argument("--config", default="config.yaml", help="主配置文件路徑")
     parser.add_argument("--local", default="config_local.yaml", help="本地配置文件路徑")
     args = parser.parse_args()
-    
+
     config_path = Path(args.config)
     local_path = Path(args.local)
-    
+
     print("=" * 60)
-    print("  Config 同步工具")
+    print("  Config 同步工具（保留註解）")
     print("=" * 60)
-    
-    # 檢查檔案
+
     if not config_path.exists():
-        print(f"  ❌ 找不到 {config_path}")
+        print(f"  [ERROR] 找不到 {config_path}")
         sys.exit(1)
-    
+
     if not local_path.exists():
-        print(f"  ❌ 找不到 {local_path}")
-        print(f"  💡 請先建立 config_local.yaml 或執行 python setup_env.py")
+        print(f"  [ERROR] 找不到 {local_path}")
         sys.exit(1)
-    
-    # 讀取配置
+
+    # 用標準 yaml 讀取兩份配置（比較差異用）
     with open(config_path, "r", encoding="utf-8") as f:
         base_config = yaml.safe_load(f)
-    
+
     with open(local_path, "r", encoding="utf-8") as f:
         local_config = yaml.safe_load(f)
-    
+
     if not local_config:
-        print(f"  ℹ️  {local_path} 為空或全部被註解，沒有需要同步的項目")
+        print(f"  {local_path} 為空，沒有需要同步的項目")
         sys.exit(0)
-    
+
     # 找出差異
     diffs = find_diffs(base_config, local_config)
-    
+
     if not diffs:
-        print(f"\n  ✅ 兩份配置完全一致，無需同步")
+        print(f"\n  兩份配置完全一致，無需同步")
         sys.exit(0)
-    
+
     # 顯示差異
     print(f"\n  找到 {len(diffs)} 項差異：\n")
     for action, path, old_val, new_val in diffs:
         if action == "新增":
-            print(f"  ➕ {path}: {new_val}")
+            print(f"  [+] {path}: {new_val}")
         else:
-            print(f"  📝 {path}: {old_val} → {new_val}")
-    
+            print(f"  [~] {path}: {old_val} -> {new_val}")
+
     if args.dry_run:
         print(f"\n  [DRY-RUN] 以上為差異，未修改任何檔案")
         sys.exit(0)
-    
+
     # 確認同步
     if not args.yes:
         answer = input(f"\n  是否將以上變更同步到 {config_path}？(y/N) ").strip().lower()
         if answer != "y":
-            print("  ❌ 取消同步")
+            print("  取消同步")
             sys.exit(0)
-    
-    # 執行同步：讀取原始 config.yaml 的文字內容，用 deep_merge 合併後寫回
-    merged = deep_merge(base_config, local_config)
-    
-    # 保留原始 config.yaml 的註解結構，使用 yaml.dump 寫回
-    # 注意：yaml.dump 會丟失原始註解，但能保證格式正確
+
+    # 用 ruamel.yaml round-trip 讀取 config.yaml（保留註解）
+    ryaml = YAML()
+    ryaml.preserve_quotes = True
+
     with open(config_path, "r", encoding="utf-8") as f:
-        original_content = f.read()
-    
+        config_data = ryaml.load(f)
+
+    # 遞迴更新值（只改值，不動註解結構）
+    update_recursive(config_data, local_config)
+
     # 備份原始檔案
     backup_path = config_path.with_suffix(".yaml.bak")
-    with open(backup_path, "w", encoding="utf-8") as f:
-        f.write(original_content)
-    print(f"\n  💾 已備份原始配置到 {backup_path}")
-    
-    # 寫入合併後的配置
+    shutil.copy2(config_path, backup_path)
+    print(f"\n  備份: {backup_path}")
+
+    # 寫回（保留註解）
     with open(config_path, "w", encoding="utf-8") as f:
-        yaml.dump(merged, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    
-    print(f"  ✅ 已同步 {len(diffs)} 項變更到 {config_path}")
-    print(f"\n  ⚠️  注意：原始的 YAML 註解可能已丟失，請檢查 {config_path}")
-    print(f"  💡 如需還原：cp {backup_path} {config_path}")
+        ryaml.dump(config_data, f)
+
+    print(f"  已同步 {len(diffs)} 項變更到 {config_path}（註解已保留）")
+    print(f"  如需還原: cp {backup_path} {config_path}")
 
 
 if __name__ == "__main__":

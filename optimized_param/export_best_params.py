@@ -2,14 +2,17 @@
 從 Optuna SQLite 資料庫中取得各 phase 最佳參數，合併後輸出為 best_params_{SYMBOL}.yaml
 
 使用方式：
-    # 自動偵測所有 .db 檔案，合併 phase1~3 最佳參數
+    # 匯出最佳參數（自動偵測所有 .db）
     python optimized_param/export_best_params.py
 
-    # 指定 symbol（預設自動從 db 檔名偵測）
+    # 指定 symbol
     python optimized_param/export_best_params.py --symbol ETHUSDT
 
-    # 指定輸出目錄
-    python optimized_param/export_best_params.py --output-dir optimized_param
+    # 匯出後自動套用到 config_local.yaml（保留所有註解）
+    python optimized_param/export_best_params.py --apply
+
+    # 套用指定的 best_params 檔案到 config_local.yaml
+    python optimized_param/export_best_params.py --apply --params-file optimized_param/best_params_ETHUSDT.yaml
 
 輸出：
     optimized_param/best_params_ETHUSDT.yaml
@@ -17,6 +20,7 @@
 
 import argparse
 import re
+import shutil
 import sys
 from pathlib import Path
 from collections import defaultdict
@@ -173,6 +177,74 @@ def export_symbol(symbol: str, phase_dbs: dict, output_dir: Path) -> Path:
     return out_path
 
 
+def apply_to_config_local(params_file: Path, config_local_path: Path) -> None:
+    """
+    將最佳參數合併到 config_local.yaml，保留所有註解。
+
+    使用 ruamel.yaml 做 round-trip 解析，只更新被優化的欄位值，
+    其餘欄位和註解完全不動。
+    """
+    from ruamel.yaml import YAML
+
+    ryaml = YAML()
+    ryaml.preserve_quotes = True
+
+    # 讀取 best_params（純值，用標準 yaml 即可）
+    with open(params_file, "r", encoding="utf-8") as f:
+        best_params = yaml.safe_load(f)
+
+    if not best_params:
+        print(f"[WARN] {params_file} 為空，跳過套用")
+        return
+
+    # 移除 metadata key（如果有）
+    best_params.pop("_metadata", None)
+
+    # 用 ruamel.yaml 讀取 config_local（保留註解）
+    with open(config_local_path, "r", encoding="utf-8") as f:
+        config_data = ryaml.load(f)
+
+    if config_data is None:
+        print(f"[WARN] {config_local_path} 為空或解析失敗")
+        return
+
+    # 遞迴更新（只改有的 key，不加新 key，不動註解）
+    def update_recursive(target, source):
+        updated = []
+        for key, value in source.items():
+            if key in target:
+                if isinstance(value, dict) and isinstance(target[key], dict):
+                    updated.extend(update_recursive(target[key], value))
+                else:
+                    old_val = target[key]
+                    target[key] = value
+                    updated.append((key, old_val, value))
+            else:
+                # config_local 中沒有此 key → 加入到對應 section
+                target[key] = value
+                updated.append((key, None, value))
+        return updated
+
+    changes = update_recursive(config_data, best_params)
+
+    # 備份原檔
+    backup_path = config_local_path.with_suffix(".yaml.bak")
+    shutil.copy2(config_local_path, backup_path)
+
+    # 寫回（保留註解）
+    with open(config_local_path, "w", encoding="utf-8") as f:
+        ryaml.dump(config_data, f)
+
+    print(f"\n[APPLY] 已套用 {params_file.name} → {config_local_path}")
+    print(f"  備份: {backup_path}")
+    print(f"  更新了 {len(changes)} 個參數:")
+    for key, old, new in changes:
+        if old is not None:
+            print(f"    {key}: {old} → {new}")
+        else:
+            print(f"    {key}: (新增) {new}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="從 Optuna SQLite 資料庫匯出各 phase 最佳參數",
@@ -189,12 +261,40 @@ def main():
         "--output-dir", type=str, default=None,
         help="輸出目錄（預設同 db-dir）"
     )
+    parser.add_argument(
+        "--apply", action="store_true",
+        help="匯出後自動套用到 config_local.yaml（保留註解）"
+    )
+    parser.add_argument(
+        "--params-file", type=str, default=None,
+        help="直接指定 best_params yaml 檔套用（搭配 --apply 使用，跳過匯出步驟）"
+    )
+    parser.add_argument(
+        "--config-local", type=str, default="config_local.yaml",
+        help="config_local.yaml 路徑（預設為專案根目錄）"
+    )
     args = parser.parse_args()
 
     # 預設目錄：腳本所在位置
     script_dir = Path(__file__).parent.resolve()
+    project_root = script_dir.parent
     db_dir = Path(args.db_dir) if args.db_dir else script_dir
     output_dir = Path(args.output_dir) if args.output_dir else db_dir
+    config_local_path = Path(args.config_local)
+    if not config_local_path.is_absolute():
+        config_local_path = project_root / config_local_path
+
+    # --apply --params-file：直接套用指定檔案，跳過匯出
+    if args.apply and args.params_file:
+        params_path = Path(args.params_file)
+        if not params_path.exists():
+            print(f"[ERROR] 找不到檔案: {params_path}")
+            sys.exit(1)
+        if not config_local_path.exists():
+            print(f"[ERROR] 找不到 config_local.yaml: {config_local_path}")
+            sys.exit(1)
+        apply_to_config_local(params_path, config_local_path)
+        return
 
     print(f"掃描目錄: {db_dir}")
     discoveries = discover_studies(db_dir)
@@ -226,6 +326,14 @@ def main():
     for f in output_files:
         print(f"    {f}")
     print(f"{'='*60}")
+
+    # --apply：匯出後自動套用到 config_local.yaml
+    if args.apply and output_files:
+        if not config_local_path.exists():
+            print(f"\n[ERROR] 找不到 config_local.yaml: {config_local_path}")
+            sys.exit(1)
+        for params_file in output_files:
+            apply_to_config_local(params_file, config_local_path)
 
 
 if __name__ == "__main__":

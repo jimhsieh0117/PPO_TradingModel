@@ -32,6 +32,7 @@ plotly>=5.14.0
 
 # === 配置文件處理 ===
 pyyaml>=6.0
+ruamel.yaml>=0.18.0
 
 # === 日誌與監控 ===
 tensorboard>=2.13.0
