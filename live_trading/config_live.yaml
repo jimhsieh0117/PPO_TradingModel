@@ -29,9 +29,9 @@ trading:
 # === 模型 ===
 model:
   #path: "models/run_ETHUSDT_20260311_230121/ppo_trading_model_best.zip"  #mac 使用路徑
-  path: "E:/computer science/coding/python/trading_strategy_project/PPO_TradingModel/models/Using_Model/ppo_trading_model_best.zip"  #windows 使用路徑
+  path: "models/Using_Model/ppo_trading_model_final.zip"  #windows 使用路徑
 
-  expected_md5: "9d3e0d2ca248e1ffb2ac326b1f9ea751"  # ppo_trading_model_best.zip MD5
+  expected_md5: "bf3b7279775d80da3a1ee0c48fd725fa"  # ppo_trading_model_best.zip MD5
   use_lstm: false
   deterministic: true              # 實盤永遠 true
 
