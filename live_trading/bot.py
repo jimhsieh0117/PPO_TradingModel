@@ -58,6 +58,7 @@ class TradingBot:
         self.config = self._load_config(config_path)
         self._shutdown_requested = False
         self._config_mtime: float = 0.0  # config 檔案最後修改時間
+        self._last_processed_ts = None   # 去重：上一根已處理 K 線的時間戳
 
         # 所有模組在 _initialize() 中初始化
         self.client: BinanceFuturesClient = None
@@ -246,6 +247,12 @@ class TradingBot:
 
             if buffer.empty:
                 return
+
+            # === 去重：防止同一根 K 線觸發兩次 ===
+            last_ts = buffer.index[-1] if hasattr(buffer.index, 'dtype') else None
+            if last_ts is not None and last_ts == self._last_processed_ts:
+                return
+            self._last_processed_ts = last_ts
 
             current_price = float(buffer.iloc[-1]["close"])
 
@@ -614,6 +621,35 @@ class TradingBot:
             logger.warning(f"Config reload failed: {e}")
 
 
+PID_FILE = Path("live_trading/bot.pid")
+
+
+def _check_single_instance() -> None:
+    """確保只有一個 bot 實例在運行（PID lock file）"""
+    if PID_FILE.exists():
+        try:
+            old_pid = int(PID_FILE.read_text().strip())
+            # 檢查舊進程是否還活著
+            os.kill(old_pid, 0)
+            print(f"ERROR: Another bot instance is already running (PID {old_pid})")
+            print(f"  If this is a stale lock, delete {PID_FILE}")
+            sys.exit(1)
+        except (ProcessLookupError, ValueError):
+            # 舊進程已死，清理 PID file
+            pass
+
+    PID_FILE.write_text(str(os.getpid()))
+
+
+def _cleanup_pid() -> None:
+    """清理 PID file"""
+    try:
+        if PID_FILE.exists():
+            PID_FILE.unlink()
+    except OSError:
+        pass
+
+
 def main():
     """CLI 入口"""
     import argparse
@@ -629,20 +665,25 @@ def main():
     )
     args = parser.parse_args()
 
+    _check_single_instance()
+
     bot = TradingBot(config_path=args.config)
 
-    if args.dry_run:
-        print("=== DRY RUN MODE ===")
-        bot._initialize()
-        print("\nAll modules initialized successfully.")
-        print(f"  Balance: {bot.state.balance:.2f}U")
-        print(f"  Position: {bot.state.position}")
-        print(f"  Model obs_dim: {bot.inference.obs_dimension}")
-        print(f"  Feature dim: {bot.feature_engine.aggregator.get_state_dimension()}")
-        print("\nDry run complete — no trading started.")
-        bot._shutdown()
-    else:
-        bot.run()
+    try:
+        if args.dry_run:
+            print("=== DRY RUN MODE ===")
+            bot._initialize()
+            print("\nAll modules initialized successfully.")
+            print(f"  Balance: {bot.state.balance:.2f}U")
+            print(f"  Position: {bot.state.position}")
+            print(f"  Model obs_dim: {bot.inference.obs_dimension}")
+            print(f"  Feature dim: {bot.feature_engine.aggregator.get_state_dimension()}")
+            print("\nDry run complete — no trading started.")
+            bot._shutdown()
+        else:
+            bot.run()
+    finally:
+        _cleanup_pid()
 
 
 if __name__ == "__main__":

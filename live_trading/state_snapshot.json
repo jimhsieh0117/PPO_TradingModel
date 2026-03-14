@@ -1,11 +1,11 @@
 {
-  "saved_at": "2026-03-14T01:48:01Z",
+  "saved_at": "2026-03-14T03:07:16Z",
   "version": 1,
   "consecutive_losses": 0,
   "daily_pnl": 0.0,
   "total_pnl": 0.0,
   "trade_count": 0,
   "daily_reset_date": "2026-03-14",
-  "balance": 5000.0,
-  "step_count": 1
+  "balance": 141.29166893,
+  "step_count": 0
 }
