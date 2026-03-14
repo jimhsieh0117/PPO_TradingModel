@@ -57,6 +57,7 @@ class TradingBot:
         self.config_path = config_path
         self.config = self._load_config(config_path)
         self._shutdown_requested = False
+        self._config_mtime: float = 0.0  # config 檔案最後修改時間
 
         # 所有模組在 _initialize() 中初始化
         self.client: BinanceFuturesClient = None
@@ -342,6 +343,7 @@ class TradingBot:
             # === 10. 定期健康檢查（每 5 分鐘） ===
             if self.state._step_count % 5 == 0:
                 self._health_check()
+                self._check_config_reload()
 
             # === 11. 每日特徵快照（UTC 0:00 附近） ===
             now_utc = datetime.now(timezone.utc)
@@ -545,6 +547,71 @@ class TradingBot:
             f"using default feature config"
         )
         return {}
+
+    # ================================================================
+    # Config 熱重載
+    # ================================================================
+
+    def _check_config_reload(self) -> None:
+        """
+        檢查 config 檔案是否被修改，有的話重新載入風控/訂單參數
+
+        可熱重載的參數（不影響模型行為）：
+        - risk: max_daily_loss_pct, max_total_loss_pct, max_consecutive_losses,
+                max_order_value_usdt, min_balance_to_trade, max_slippage_pct
+        - system: shutdown_action
+
+        不可熱重載（需重啟）：
+        - model, trading.symbol, trading.position_size_pct, exchange
+        """
+        try:
+            config_path = Path(self.config_path)
+            mtime = config_path.stat().st_mtime
+
+            if self._config_mtime == 0:
+                self._config_mtime = mtime
+                return
+
+            if mtime <= self._config_mtime:
+                return
+
+            # 檔案有更新
+            self._config_mtime = mtime
+            new_config = self._load_config(self.config_path)
+
+            # 更新風控參數
+            new_risk = new_config.get("risk", {})
+            old_risk = self.config.get("risk", {})
+            changed = []
+
+            for key in ["max_daily_loss_pct", "max_total_loss_pct",
+                        "max_consecutive_losses", "max_order_value_usdt",
+                        "min_balance_to_trade", "max_slippage_pct"]:
+                if new_risk.get(key) != old_risk.get(key):
+                    changed.append(f"{key}: {old_risk.get(key)} → {new_risk.get(key)}")
+
+            if changed:
+                rm = self.risk_manager
+                rm.max_daily_loss_pct = new_risk["max_daily_loss_pct"]
+                rm.max_total_loss_pct = new_risk["max_total_loss_pct"]
+                rm.max_consecutive_losses = new_risk["max_consecutive_losses"]
+                rm.max_order_value = new_risk["max_order_value_usdt"]
+                rm.min_balance_to_trade = new_risk["min_balance_to_trade"]
+                rm.max_slippage_pct = new_risk["max_slippage_pct"]
+
+                self.executor.max_order_value = new_risk["max_order_value_usdt"]
+
+                self.config = new_config
+                msg = "Config hot-reloaded:\n  " + "\n  ".join(changed)
+                logger.info(msg)
+                self.notifier.send_system(msg)
+            else:
+                # 其他欄位更新（shutdown_action 等）
+                self.config = new_config
+                logger.info("Config reloaded (no risk parameter changes)")
+
+        except Exception as e:
+            logger.warning(f"Config reload failed: {e}")
 
 
 def main():

@@ -47,7 +47,7 @@ risk:
   max_open_positions: 1            # 最多同時 1 個倉位
 
   # --- 訂單級別 ---
-  max_order_value_usdt: 100.0       # 單筆最大下單金額（200U × 20% = 40U，留 25% 餘裕）
+  max_order_value_usdt: 2500.0       # 單筆最大下單金額（200U × 20% = 40U，留 25% 餘裕）
   min_balance_to_trade: 40.0       # 餘額低於 40U 停止交易
 
   # --- 滑點保護 ---
