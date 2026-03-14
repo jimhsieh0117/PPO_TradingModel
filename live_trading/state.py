@@ -341,12 +341,31 @@ class TradingState:
                 self.quantity = abs(pos_amt)
                 # holding_steps 無法從交易所恢復，保持現有值
             else:
-                self.position = 0
-                self.entry_price = 0.0
-                self.quantity = 0.0
-                self.holding_steps = 0
-                self.current_sl = 0.0
-                self.sl_order_id = ""
+                # 本地有倉但交易所無倉 → 止損被觸發，需結算 PnL
+                if self.position != 0 and self.entry_price > 0:
+                    # 用 balance 差異估算 PnL
+                    old_balance = self.balance
+                    estimated_pnl = balance - old_balance
+                    logger.warning(
+                        f"SL likely triggered on exchange | "
+                        f"estimated_pnl={estimated_pnl:+.4f} "
+                        f"(balance: {old_balance:.2f} → {balance:.2f})"
+                    )
+                    self.close_position(
+                        exit_price=0.0,  # 無法得知精確平倉價
+                        pnl=estimated_pnl,
+                        fee=0.0,
+                        reason="exchange_sl_triggered",
+                    )
+                    # close_position 已更新 balance，但交易所 balance 才是真值
+                    self.balance = balance
+                else:
+                    self.position = 0
+                    self.entry_price = 0.0
+                    self.quantity = 0.0
+                    self.holding_steps = 0
+                    self.current_sl = 0.0
+                    self.sl_order_id = ""
 
         self.equity = balance + unrealized_pnl
 

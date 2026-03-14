@@ -309,9 +309,12 @@ class TradingBot:
                 )
                 executed = result is not None
                 if executed:
-                    self._handle_trade_result(result, obs, market_features,
-                                              current_price, action,
-                                              executed=True, risk_passed=True)
+                    # 反向開倉時 result 是 list[dict]（平倉+開倉）
+                    results = result if isinstance(result, list) else [result]
+                    for r in results:
+                        self._handle_trade_result(r, obs, market_features,
+                                                  current_price, action,
+                                                  executed=True, risk_passed=True)
                 else:
                     # HOLD 或無操作
                     self.tlogger.log_decision(

@@ -16,7 +16,7 @@
 
 import logging
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from live_trading.utils.binance_client import BinanceFuturesClient, BinanceClientError
 
@@ -92,7 +92,7 @@ class Executor:
     # ================================================================
 
     def execute(self, action: int, state, atr: float,
-                current_price: float) -> Optional[Dict[str, Any]]:
+                current_price: float) -> Union[None, Dict[str, Any], List[Dict[str, Any]]]:
         """
         執行交易動作
 
@@ -103,7 +103,9 @@ class Executor:
             current_price: 當前價格
 
         Returns:
-            交易結果 dict（開/平倉），或 None（HOLD 或無操作）
+            - None: HOLD 或無操作
+            - dict: 單一交易結果（開倉或平倉）
+            - list[dict]: 反向開倉時回傳 [平倉結果, 開倉結果]
         """
         if action == ACTION_HOLD:
             return None
@@ -114,14 +116,18 @@ class Executor:
             return self._close_position(state)
 
         if action == ACTION_LONG:
-            # 已有多倉 → 不重複開
             if state.position == 1:
                 return None
-            # 有空倉 → 先平
+            # 有空倉 → 先平再開，回傳兩個結果
             if state.position == -1:
                 close_result = self._close_position(state)
                 if close_result is None:
-                    return None  # 平倉失敗，不繼續開倉
+                    return None
+                open_result = self._open_position(side=1, state=state, atr=atr,
+                                                  current_price=current_price)
+                if open_result is None:
+                    return close_result  # 平倉成功但開倉失敗，仍回傳平倉
+                return [close_result, open_result]
             return self._open_position(side=1, state=state, atr=atr,
                                        current_price=current_price)
 
@@ -132,6 +138,11 @@ class Executor:
                 close_result = self._close_position(state)
                 if close_result is None:
                     return None
+                open_result = self._open_position(side=-1, state=state, atr=atr,
+                                                  current_price=current_price)
+                if open_result is None:
+                    return close_result
+                return [close_result, open_result]
             return self._open_position(side=-1, state=state, atr=atr,
                                        current_price=current_price)
 

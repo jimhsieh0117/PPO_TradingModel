@@ -53,17 +53,29 @@ def _make_config() -> dict:
 def _make_mock_client():
     """模擬 BinanceFuturesClient"""
     client = MagicMock()
-    client.place_market_order.return_value = {
+    # 開倉用 LIMIT IOC
+    client.place_limit_ioc.return_value = {
         "status": "FILLED",
         "avgPrice": "2450.00",
         "executedQty": "0.016",
         "orderId": "123456",
+    }
+    # 平倉 IOC 也預設成功
+    # 緊急平倉 fallback 用市價單
+    client.place_market_order.return_value = {
+        "status": "FILLED",
+        "avgPrice": "2450.00",
+        "executedQty": "0.016",
+        "orderId": "123457",
     }
     client.place_stop_market.return_value = {
         "orderId": "789012",
     }
     client.get_order.return_value = {
         "status": "NEW",
+    }
+    client.get_ticker_price.return_value = {
+        "price": "2450.00",
     }
     client.cancel_order.return_value = {}
     return client
@@ -208,7 +220,7 @@ class TestExecutorActions:
 
         assert result is not None
         assert result["side"] == "BUY"
-        client.place_market_order.assert_called_once()
+        client.place_limit_ioc.assert_called_once()
         client.place_stop_market.assert_called_once()
 
     def test_open_short_calls_api(self):
@@ -238,7 +250,7 @@ class TestExecutorActions:
         client.cancel_order.assert_called_once_with("ETHUSDT", 789)
 
     def test_reverse_position_closes_first(self):
-        """反向開倉先平再開"""
+        """反向開倉先平再開，回傳 [平倉結果, 開倉結果]"""
         config = _make_config()
         client = _make_mock_client()
         executor = Executor(client, config)
@@ -248,8 +260,29 @@ class TestExecutorActions:
 
         result = executor.execute(ACTION_SHORT, state, atr=20.0, current_price=2500.0)
 
-        # 應該有 2 次市價單呼叫（平倉 + 開倉）
-        assert client.place_market_order.call_count == 2
+        # 回傳 list：[平倉, 開倉]
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert "exit_price" in result[0]  # 平倉結果
+        assert "entry_price" in result[1]  # 開倉結果
+        # 平倉用 limit_ioc，開倉也用 limit_ioc
+        assert client.place_limit_ioc.call_count == 2
+
+    def test_ioc_expired_returns_none(self):
+        """IOC 單 EXPIRED（滑點超限）→ 不開倉"""
+        config = _make_config()
+        client = _make_mock_client()
+        client.place_limit_ioc.return_value = {
+            "status": "EXPIRED",
+            "avgPrice": "0",
+            "executedQty": "0",
+            "orderId": "999",
+        }
+        executor = Executor(client, config)
+        state = TradingState(initial_balance=200.0)
+
+        result = executor.execute(ACTION_LONG, state, atr=20.0, current_price=2500.0)
+        assert result is None
 
 
 # ================================================================
