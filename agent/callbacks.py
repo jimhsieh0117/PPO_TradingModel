@@ -1,5 +1,6 @@
 import csv
 import math
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -19,6 +20,7 @@ class TrainingMetricsCallback(BaseCallback):
         max_daily_drawdown: float,
         enable_detailed_logging: bool = True,
         best_model_rolling_window: int = 20,
+        best_model_top_n: int = 3,
         verbose: int = 0,
     ):
         super().__init__(verbose)
@@ -46,6 +48,14 @@ class TrainingMetricsCallback(BaseCallback):
         self._episode_reward_history: List[float] = []
         self._episode_return_history: List[float] = []
         self._last_train_metrics: Dict[str, Optional[float]] = {}
+
+        # 複合評分用歷史
+        self._episode_pf_history: List[float] = []
+        self._episode_mdd_history: List[float] = []
+
+        # Top-N 模型管理
+        self._top_n = best_model_top_n
+        self._top_n_models: List[Dict] = []  # [{score, path, timestep, episode}]
 
         # 效能優化：每 N 個 episodes 才 flush 一次
         self._flush_interval = 20
@@ -127,8 +137,15 @@ class TrainingMetricsCallback(BaseCallback):
             "timestamp",
             "timesteps",
             "episode",
+            "scoring_method",
             "new_best_rolling_mean",
             "previous_best_rolling_mean",
+            "composite_score",
+            "rolling_sharpe",
+            "rolling_pf",
+            "rolling_mdd",
+            "rolling_return",
+            "rank",
             "overwritten_model",
             "best_model_path",
         ]
@@ -147,14 +164,133 @@ class TrainingMetricsCallback(BaseCallback):
             "timestamp": row.get("timestamp"),
             "timesteps": row.get("timesteps"),
             "episode": row.get("episode"),
+            "scoring_method": "rolling_mean_return",
             "new_best_rolling_mean": new_best,
             "previous_best_rolling_mean": previous_best,
+            "composite_score": None,
+            "rolling_sharpe": None,
+            "rolling_pf": None,
+            "rolling_mdd": None,
+            "rolling_return": new_best,
+            "rank": None,
             "overwritten_model": overwritten_model,
             "best_model_path": str(self.best_model_path),
         }
         with open(self.best_log_path, "a", newline="", encoding="utf-8") as file:
             writer = csv.DictWriter(file, fieldnames=data.keys())
             writer.writerow(data)
+
+    def _log_best_event_composite(self, row: Dict, entry: Dict) -> None:
+        w = self._rolling_window
+        rolling_return = float(np.mean(self._episode_return_history[-w:]))
+        rolling_pf = float(np.mean(self._episode_pf_history[-w:]))
+        rolling_mdd = float(np.mean(self._episode_mdd_history[-w:]))
+        returns_arr = np.array(self._episode_return_history[-w:], dtype=float)
+        rolling_sharpe = float(
+            returns_arr.mean() / (returns_arr.std() + 1e-8) * math.sqrt(252)
+        )
+
+        # 找到此 entry 的排名
+        rank = next(
+            (i + 1 for i, m in enumerate(self._top_n_models) if m["path"] == entry["path"]),
+            None,
+        )
+
+        data = {
+            "timestamp": row.get("timestamp"),
+            "timesteps": row.get("timesteps"),
+            "episode": row.get("episode"),
+            "scoring_method": "composite",
+            "new_best_rolling_mean": rolling_return,
+            "previous_best_rolling_mean": None,
+            "composite_score": entry["score"],
+            "rolling_sharpe": rolling_sharpe,
+            "rolling_pf": rolling_pf,
+            "rolling_mdd": rolling_mdd,
+            "rolling_return": rolling_return,
+            "rank": rank,
+            "overwritten_model": "",
+            "best_model_path": entry["path"],
+        }
+        with open(self.best_log_path, "a", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=data.keys())
+            writer.writerow(data)
+
+    def _compute_composite_score(self) -> Optional[float]:
+        w = self._rolling_window
+        if (len(self._episode_return_history) < w
+                or len(self._episode_pf_history) < w
+                or len(self._episode_mdd_history) < w):
+            return None
+
+        rolling_return = float(np.mean(self._episode_return_history[-w:]))
+        rolling_pf = float(np.mean(self._episode_pf_history[-w:]))
+        rolling_mdd = float(np.mean(self._episode_mdd_history[-w:]))
+
+        returns_arr = np.array(self._episode_return_history[-w:], dtype=float)
+        rolling_sharpe = float(
+            returns_arr.mean() / (returns_arr.std() + 1e-8) * math.sqrt(252)
+        )
+
+        return (
+            0.40 * rolling_sharpe
+            + 0.25 * rolling_pf * 10
+            - 0.20 * rolling_mdd * 100
+            + 0.15 * rolling_return
+        )
+
+    def _update_top_n(self, score: float, row: Dict) -> None:
+        entry = {
+            "score": score,
+            "timestep": int(self.num_timesteps),
+            "episode": int(self._episode_counter),
+        }
+
+        if len(self._top_n_models) < self._top_n:
+            rank = len(self._top_n_models) + 1
+            path = str(self.best_model_path.parent / f"ppo_trading_model_best_top{rank}.zip")
+            entry["path"] = path
+            self.model.save(path)
+            self._top_n_models.append(entry)
+            self._top_n_models.sort(key=lambda x: x["score"], reverse=True)
+        elif score > self._top_n_models[-1]["score"]:
+            entry["path"] = self._top_n_models[-1]["path"]
+            self.model.save(entry["path"])
+            self._top_n_models[-1] = entry
+            self._top_n_models.sort(key=lambda x: x["score"], reverse=True)
+        else:
+            return  # 沒進 top-N
+
+        # 排序後重新命名檔案以匹配排名（使用暫存檔名避免互換衝突）
+        parent = self.best_model_path.parent
+        needs_rename = []
+        for i, model_entry in enumerate(self._top_n_models):
+            expected_path = str(parent / f"ppo_trading_model_best_top{i + 1}.zip")
+            if model_entry["path"] != expected_path:
+                needs_rename.append((i, model_entry))
+
+        if needs_rename:
+            # Pass 1: 全部先移到暫存名
+            for i, model_entry in needs_rename:
+                tmp_path = str(parent / f"ppo_trading_model_best_top{i + 1}.zip.tmp")
+                old_path = Path(model_entry["path"])
+                if old_path.exists():
+                    shutil.move(str(old_path), tmp_path)
+                model_entry["path"] = tmp_path
+
+            # Pass 2: 暫存名移到最終名
+            for i, model_entry in needs_rename:
+                final_path = str(parent / f"ppo_trading_model_best_top{i + 1}.zip")
+                tmp_path = model_entry["path"]
+                if Path(tmp_path).exists():
+                    shutil.move(tmp_path, final_path)
+                model_entry["path"] = final_path
+
+        # 同步 best.zip = top1（向後相容）
+        top1_path = self._top_n_models[0]["path"]
+        shutil.copy2(top1_path, str(self.best_model_path))
+
+        self._log_best_event_composite(row, entry)
 
     def _maybe_save_best(self, row: Dict) -> None:
         max_drawdown = row.get("max_drawdown")
@@ -163,10 +299,16 @@ class TrainingMetricsCallback(BaseCallback):
         # 安全閥：單 episode 回撤超過 50% 不保存
         if float(max_drawdown) > 0.50:
             return
-        # 需要足夠的歷史才能計算滾動平均
-        if len(self._episode_return_history) < self._rolling_window:
+
+        # 嘗試複合評分（需要足夠歷史的 PF/MDD 資料）
+        score = self._compute_composite_score()
+        if score is not None and self._top_n > 0:
+            self._update_top_n(score, row)
             return
 
+        # Fallback：原始 rolling mean return 邏輯
+        if len(self._episode_return_history) < self._rolling_window:
+            return
         rolling_mean = float(np.mean(self._episode_return_history[-self._rolling_window:]))
         if rolling_mean <= self._best_rolling_mean:
             return
@@ -341,6 +483,17 @@ class TrainingMetricsCallback(BaseCallback):
             if self._episodes_since_last_flush >= self._flush_interval:
                 self._file.flush()
                 self._episodes_since_last_flush = 0
+
+        # 累積 PF/MDD 歷史（無論 enable_detailed_logging 開關，info dict 始終可用）
+        pf = info.get("profit_factor")
+        mdd = info.get("max_drawdown")
+        if pf is not None:
+            self._episode_pf_history.append(float(pf))
+        if mdd is not None:
+            self._episode_mdd_history.append(float(mdd))
+            # 確保 row 中有 max_drawdown（簡化模式下不在 row 中）
+            if "max_drawdown" not in row:
+                row["max_drawdown"] = mdd
 
         self._maybe_save_best(row)
 

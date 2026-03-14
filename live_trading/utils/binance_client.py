@@ -251,7 +251,7 @@ class BinanceFuturesClient:
         )
 
     def get_klines(self, symbol: str, interval: str = "1m",
-                   limit: int = 500) -> List[List]:
+                   limit: int = 500, **kwargs) -> List[List]:
         """
         取得歷史 K 線（REST API，用於暖機和斷線補缺口）
 
@@ -259,13 +259,16 @@ class BinanceFuturesClient:
             symbol: 交易對
             interval: K 線間隔（"1m", "5m", etc.）
             limit: 數量上限（最大 1500）
+            **kwargs: 額外參數（startTime, endTime 等）
 
         Returns:
             K 線列表 [[open_time, open, high, low, close, volume, ...], ...]
         """
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        params.update(kwargs)
         return self._request(
             "GET", "/fapi/v1/klines",
-            params={"symbol": symbol, "interval": interval, "limit": limit},
+            params=params,
             signed=False,
         )
 

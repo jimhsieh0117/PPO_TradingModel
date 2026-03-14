@@ -62,8 +62,8 @@ risk:
 
 # === 數據 ===
 data:
-  buffer_size: 500                 # K 線 buffer 長度（特徵計算需要歷史數據）
-  warmup_bars: 200                 # 啟動時需先收集 200 根 K 線才開始交易
+  buffer_size: 20160               # K 線 buffer 長度（2 週 = 20160 根 1m K 線，供特徵計算用）
+  warmup_bars: 20160               # 啟動時預載入 2 週歷史 K 線暖機
 
 # === 通知 ===
 notification:

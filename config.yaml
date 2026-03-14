@@ -107,6 +107,9 @@ training:
   save_freq: 10000                # 每 N 步保存一次模型
   eval_freq: 5000                 # 每 N 步評估一次
 
+  # Best Model 選擇
+  best_model_top_n: 3             # 保存表現最佳的 N 個模型（複合評分：Sharpe 40% + PF 25% + MDD 20% + Return 15%）
+
   # 效能優化選項
   enable_detailed_logging: true  # 是否記錄詳細訓練監控數據（34+ 指標）
                                   # false = 只記錄基本指標（episode, reward, profit）

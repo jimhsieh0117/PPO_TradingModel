@@ -259,6 +259,7 @@ def setup_callbacks(save_dir: str, config: dict):
         initial_capital=backtest_config.get('initial_capital', 10000.0),
         max_daily_drawdown=trading_config.get('daily_drawdown_limit', 0.10),
         enable_detailed_logging=enable_detailed_logging,
+        best_model_top_n=training_config.get('best_model_top_n', 3),
         verbose=1
     )
     callbacks.append(metrics_callback)
