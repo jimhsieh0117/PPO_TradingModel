@@ -1,0 +1,94 @@
+# === Live Trading Configuration ===
+# 實盤專用配置 — 所有參數必須與模型訓練 config 對齊
+# 目標模型：run_ETHUSDT_20260311_230121
+#
+# 重要：API Key 從環境變數讀取，永不寫死在此檔案中
+# 設定方式：
+#   export BINANCE_API_KEY="your_api_key"
+#   export BINANCE_API_SECRET="your_api_secret"
+
+# === 交易所連線 ===
+exchange:
+  name: "binance_futures"
+  testnet: true                    # true = Testnet, false = Production
+  api_key_env: "BINANCE_API_KEY"   # 環境變數名稱
+  api_secret_env: "BINANCE_API_SECRET"
+
+# === 交易設定 ===
+trading:
+  symbol: "ETHUSDT"
+  leverage: 1                      # 與訓練一致（run_ETHUSDT_20260311_230121: leverage=1）
+  position_size_pct: 0.20          # 與訓練一致（run_ETHUSDT_20260311_230121: 0.20）
+                                   # 實際曝險 = 1x leverage × 20% = 0.20x
+  margin_type: "CROSSED"           # 全倉模式
+  taker_fee: 0.0004               # 與訓練一致（記錄用，實盤依 VIP 等級）
+  slippage: 0.0                   # 實盤為真實滑點，不額外加
+  max_holding_steps: 120           # 與訓練一致 — 持倉超過 120 步強制平倉
+  dynamic_atr_stop: false          # 與訓練一致 — 不啟用波動率自適應 ATR 倍數
+
+# === 模型 ===
+model:
+  path: "models/run_ETHUSDT_20260311_230121/ppo_trading_model_best.zip"
+  expected_md5: "9d3e0d2ca248e1ffb2ac326b1f9ea751"  # ppo_trading_model_best.zip MD5
+  use_lstm: false
+  deterministic: true              # 實盤永遠 true
+
+# === 風控 ===
+risk:
+  # --- 止損 ---
+  atr_stop_multiplier: 2.0        # 與訓練一致
+  trailing_stop: false             # 與訓練一致（run_ETHUSDT_20260311_230121: false）
+  stop_loss_pct: 0.02             # 與訓練一致（run_ETHUSDT_20260311_230121: 0.02）
+
+  # --- 帳戶級別 ---
+  max_daily_loss_pct: 0.10         # 單日虧損 > 10% → 暫停交易至隔日
+  max_total_loss_pct: 0.30         # 總虧損 > 30% → 完全停止，需人工介入
+  max_consecutive_losses: 10       # 連續虧損 10 筆 → 暫停 1 小時
+  max_open_positions: 1            # 最多同時 1 個倉位
+
+  # --- 訂單級別 ---
+  max_order_value_usdt: 100.0       # 單筆最大下單金額（200U × 20% = 40U，留 25% 餘裕）
+  min_balance_to_trade: 40.0       # 餘額低於 40U 停止交易
+
+  # --- 滑點保護 ---
+  max_slippage_pct: 0.003          # 滑點超過 0.3% 拒絕下單
+
+  # --- API 斷路器 ---
+  circuit_breaker_threshold: 3     # 連續 N 次 API 錯誤（429/5xx）觸發冷卻
+  circuit_breaker_cooldown: 60     # 冷卻秒數
+  circuit_breaker_max_triggers: 3  # 連續觸發 N 次冷卻 → 進入待機模式
+
+# === 數據 ===
+data:
+  buffer_size: 500                 # K 線 buffer 長度（特徵計算需要歷史數據）
+  warmup_bars: 200                 # 啟動時需先收集 200 根 K 線才開始交易
+
+# === 通知 ===
+notification:
+  enabled: true
+  method: "telegram"               # telegram / log_only
+  telegram_bot_token_env: "TELEGRAM_BOT_TOKEN"
+  telegram_chat_id_env: "TELEGRAM_CHAT_ID"
+  notify_on_trade: true            # 每筆交易通知
+  notify_on_error: true            # 錯誤通知
+  notify_heartbeat_minutes: 60     # 每小時心跳
+
+# === 日誌 ===
+logging:
+  level: "INFO"
+  log_dir: "live_trading/logs"
+  max_log_size_mb: 50
+  backup_count: 10
+
+# === 系統行為 ===
+system:
+  shutdown_action: "keep_with_sl"  # close_all / keep_with_sl
+  state_snapshot: true             # 每次狀態更新寫入 state_snapshot.json
+
+# === 訓練參數參考（唯讀，供交叉比對） ===
+# 來源：models/run_ETHUSDT_20260311_230121/config.yaml
+_training_reference:
+  episode_length: 720              # deque(maxlen) for equity_history
+  holding_bonus_steps: 30          # holding_time_norm = min(steps/120, 1.0)
+  policy_network: [256, 128]
+  value_network: [256, 128]
