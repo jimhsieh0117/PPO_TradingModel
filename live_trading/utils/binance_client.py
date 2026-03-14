@@ -242,6 +242,14 @@ class BinanceFuturesClient:
         )
         return float(data["markPrice"])
 
+    def get_ticker_price(self, symbol: str) -> Dict:
+        """取得最新成交價"""
+        return self._request(
+            "GET", "/fapi/v1/ticker/price",
+            params={"symbol": symbol},
+            signed=False,
+        )
+
     def get_klines(self, symbol: str, interval: str = "1m",
                    limit: int = 500) -> List[List]:
         """
@@ -321,6 +329,46 @@ class BinanceFuturesClient:
             f"avgPrice={result.get('avgPrice')} "
             f"executedQty={result.get('executedQty')} "
             f"status={result.get('status')}"
+        )
+        return result
+
+    def place_limit_ioc(self, symbol: str, side: str,
+                        quantity: float, price: float) -> Dict:
+        """
+        發送限價 IOC 單（Immediate-Or-Cancel）
+
+        比市價單多一層滑點保護：
+        - 能成交就立即成交（跟市價單一樣快）
+        - 價格超過限價則自動取消（避免高波動下的不利滑點）
+
+        Args:
+            symbol: 交易對
+            side: "BUY" / "SELL"
+            quantity: 下單數量
+            price: 限價（BUY 的上限 / SELL 的下限）
+
+        Returns:
+            訂單結果（status 可能為 FILLED / PARTIALLY_FILLED / EXPIRED）
+        """
+        params = {
+            "symbol": symbol,
+            "side": side,
+            "type": "LIMIT",
+            "timeInForce": "IOC",
+            "quantity": self._format_quantity(quantity, symbol),
+            "price": self._format_price(price, symbol),
+        }
+
+        logger.info(
+            f"LIMIT IOC ORDER | {side} {quantity} {symbol} @ {price:.2f}"
+        )
+        result = self._request("POST", "/fapi/v1/order", params=params)
+        status = result.get("status", "UNKNOWN")
+        logger.info(
+            f"ORDER RESULT | orderId={result.get('orderId')} "
+            f"avgPrice={result.get('avgPrice')} "
+            f"executedQty={result.get('executedQty')} "
+            f"status={status}"
         )
         return result
 

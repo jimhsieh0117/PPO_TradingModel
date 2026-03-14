@@ -52,6 +52,7 @@ class Executor:
         self.atr_stop_multiplier: float = config["risk"]["atr_stop_multiplier"]
         self.stop_loss_pct: float = config["risk"]["stop_loss_pct"]
         self.max_order_value: float = config["risk"]["max_order_value_usdt"]
+        self.max_slippage_pct: float = config["risk"].get("max_slippage_pct", 0.003)
 
         # 快取交易所 filter
         self._min_notional: float = 5.0  # 預設值，啟動時更新
@@ -177,15 +178,28 @@ class Executor:
         order_side = "BUY" if side == 1 else "SELL"
 
         try:
-            # Step 1: 市價單
-            order_result = self.client.place_market_order(
-                self.symbol, order_side, qty
+            # Step 1: 限價 IOC 單（滑點保護）
+            if order_side == "BUY":
+                limit_price = current_price * (1 + self.max_slippage_pct)
+            else:
+                limit_price = current_price * (1 - self.max_slippage_pct)
+
+            order_result = self.client.place_limit_ioc(
+                self.symbol, order_side, qty, limit_price
             )
 
             # 解析成交結果
             status = order_result.get("status", "")
-            if status != "FILLED":
-                logger.error(f"Market order not filled: status={status}")
+            if status == "EXPIRED":
+                # IOC 完全未成交 — 價格超出滑點容忍範圍
+                logger.warning(
+                    f"LIMIT IOC expired (no fill) | "
+                    f"side={order_side} limit={limit_price:.2f} — "
+                    f"slippage exceeded {self.max_slippage_pct:.1%}"
+                )
+                return None
+            if status not in ("FILLED", "PARTIALLY_FILLED"):
+                logger.error(f"Order unexpected status: {status}")
                 return None
 
             avg_price = float(order_result.get("avgPrice", current_price))
@@ -268,12 +282,40 @@ class Executor:
         close_side = "SELL" if state.position == 1 else "BUY"
 
         try:
-            # Step 1: 市價平倉
-            order_result = self.client.place_market_order(
-                self.symbol, close_side, state.quantity
+            # Step 1: 限價 IOC 平倉（滑點保護）
+            # 平倉方向與持倉相反
+            last_price = state.entry_price  # fallback
+            try:
+                ticker = self.client.get_ticker_price(self.symbol)
+                last_price = float(ticker.get("price", last_price))
+            except Exception:
+                pass
+
+            if close_side == "SELL":
+                limit_price = last_price * (1 - self.max_slippage_pct)
+            else:
+                limit_price = last_price * (1 + self.max_slippage_pct)
+
+            order_result = self.client.place_limit_ioc(
+                self.symbol, close_side, state.quantity, limit_price
             )
 
             status = order_result.get("status", "")
+            if status in ("EXPIRED", "PARTIALLY_FILLED"):
+                # 平倉必須完成 — fallback 到市價單
+                remaining = state.quantity
+                if status == "PARTIALLY_FILLED":
+                    remaining -= float(order_result.get("executedQty", 0))
+                if remaining > 0:
+                    logger.warning(
+                        f"IOC close incomplete ({status}), "
+                        f"fallback to market for {remaining}"
+                    )
+                    order_result = self.client.place_market_order(
+                        self.symbol, close_side, remaining
+                    )
+                    status = order_result.get("status", "")
+
             if status != "FILLED":
                 logger.error(f"Close order not filled: status={status}")
                 return None
