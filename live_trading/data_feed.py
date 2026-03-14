@@ -107,26 +107,53 @@ class DataFeed:
         """
         logger.info(f"Warming up buffer: fetching {warmup_bars} historical klines...")
 
-        # Binance REST API 最多回傳 1500 根
-        raw_klines = client.get_klines(symbol, interval="1m", limit=warmup_bars)
+        # Binance REST API 最多回傳 1500 根，需分批抓取
+        MAX_PER_REQUEST = 1500
+        all_rows = []
+        remaining = warmup_bars
+        end_time = None  # None = 從最新開始往回抓
 
-        rows = []
-        for k in raw_klines:
-            rows.append({
-                "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC"),
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-                "trades": int(k[8]),
-            })
+        while remaining > 0:
+            batch_size = min(remaining, MAX_PER_REQUEST)
+            kwargs = {"symbol": symbol, "interval": "1m", "limit": batch_size}
+            if end_time is not None:
+                kwargs["endTime"] = end_time
 
-        if not rows:
+            raw_klines = client.get_klines(**kwargs)
+            if not raw_klines:
+                break
+
+            batch_rows = []
+            for k in raw_klines:
+                batch_rows.append({
+                    "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC"),
+                    "open": float(k[1]),
+                    "high": float(k[2]),
+                    "low": float(k[3]),
+                    "close": float(k[4]),
+                    "volume": float(k[5]),
+                    "trades": int(k[8]),
+                })
+
+            all_rows = batch_rows + all_rows  # 較早的資料放前面
+            remaining -= len(batch_rows)
+
+            # 下一批的結束時間 = 這批最早的時間戳 - 1ms
+            earliest_ts = int(raw_klines[0][0])
+            end_time = earliest_ts - 1
+
+            if len(batch_rows) < batch_size:
+                break  # 已無更多歷史資料
+
+            logger.info(
+                f"Warmup progress: fetched {len(all_rows)}/{warmup_bars} bars..."
+            )
+
+        if not all_rows:
             logger.error("Warmup failed: no klines received from REST API")
             return 0
 
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(all_rows)
         df = df.set_index("timestamp")
 
         with self._buffer_lock:

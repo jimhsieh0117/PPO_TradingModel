@@ -190,13 +190,14 @@ def build_metrics(stats: pd.Series, trades: pd.DataFrame, data_index: pd.Index =
     return metrics
 
 
-def run_backtest_pipeline(config: dict, run_dir) -> dict:
+def run_backtest_pipeline(config: dict, run_dir, model_path: Optional[str] = None) -> dict:
     """
     執行完整回測流程，可被外部直接呼叫（不依賴 argparse）。
 
     Args:
         config: 已載入並合併的配置字典
         run_dir: 模型所在目錄（會自動尋找 best model，輸出至 run_dir/backtest_results）
+        model_path: 指定模型檔案路徑（覆蓋自動偵測）
 
     Returns:
         metrics dict
@@ -214,7 +215,7 @@ def run_backtest_pipeline(config: dict, run_dir) -> dict:
     bt_data = normalize_ohlcv(df_raw)
     print(f"      Loaded {len(bt_data):,} bars from {data_path.name}")
 
-    model_path = resolve_model_path(run_dir, None)
+    model_path = resolve_model_path(run_dir, model_path)
 
     backtest_config = config.get("backtest", {})
     trading_config = config.get("trading", {})
@@ -354,13 +355,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run PPO backtest with backtesting.py")
     parser.add_argument("--config", default="config.yaml", help="Config file path")
     parser.add_argument("--run-dir", help="Run directory for outputs (optional)")
+    parser.add_argument("--model", help="Model file path (override auto-detection)")
     args = parser.parse_args()
 
     config = load_config(args.config)
     models_dir = Path(config.get("training", {}).get("model_save_dir", "models"))
     run_dir = Path(args.run_dir) if args.run_dir else find_latest_run_dir(models_dir)
 
-    run_backtest_pipeline(config, run_dir)
+    run_backtest_pipeline(config, run_dir, model_path=args.model)
 
 
 if __name__ == "__main__":
