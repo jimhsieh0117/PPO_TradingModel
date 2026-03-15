@@ -274,6 +274,12 @@ def _run_single_fold(args: tuple) -> Dict:
         )
         PPOTradingStrategy.precomputed_features = test_features
         PPOTradingStrategy.use_lstm = use_lstm
+        PPOTradingStrategy.episode_length = int(
+            training_cfg.get("episode_length", 720)
+        )
+        PPOTradingStrategy.max_holding_steps = int(
+            config.get("reward", {}).get("max_holding_steps", 120)
+        )
 
         base_comm = float(backtest_cfg.get("commission", 0.0004))
         slippage = float(trading_cfg.get("slippage", 0.0))
