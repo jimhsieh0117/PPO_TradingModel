@@ -180,6 +180,15 @@ class Executor:
         6. 發送 STOP_MARKET 止損單
         7. 驗證止損單存在
         """
+        # P1 防護：下單前確認交易所無同方向倉位
+        exchange_pos = self._check_exchange_position()
+        if exchange_pos == side:
+            logger.warning(
+                f"Exchange already has {'LONG' if side == 1 else 'SHORT'} "
+                f"position — skipping duplicate open"
+            )
+            return None
+
         # 計算下單數量
         qty = self._calculate_quantity(state.balance, current_price)
         if qty is None:
@@ -199,8 +208,10 @@ class Executor:
                 self.symbol, order_side, qty, limit_price
             )
 
-            # 解析成交結果
+            # 解析成交結果（收到 NEW 時輪詢最終狀態）
+            order_result = self._resolve_order_status(order_result)
             status = order_result.get("status", "")
+
             if status == "EXPIRED":
                 # IOC 完全未成交 — 價格超出滑點容忍範圍
                 logger.warning(
@@ -311,6 +322,8 @@ class Executor:
                 self.symbol, close_side, state.quantity, limit_price
             )
 
+            # 收到 NEW 時輪詢最終狀態
+            order_result = self._resolve_order_status(order_result)
             status = order_result.get("status", "")
             if status in ("EXPIRED", "PARTIALLY_FILLED"):
                 # 平倉必須完成 — fallback 到市價單
@@ -474,6 +487,80 @@ class Executor:
     # ================================================================
     # 輔助方法
     # ================================================================
+
+    def _resolve_order_status(self, order_result: Dict,
+                              timeout_s: float = 3.0) -> Dict:
+        """
+        IOC 訂單回傳 status=NEW 時，輪詢查詢最終狀態
+
+        Binance matching engine 可能在低流動性時段有微秒級延遲，
+        API 先回傳 NEW 但訂單實際已成交。
+
+        Args:
+            order_result: place_limit_ioc 的原始回傳
+            timeout_s: 最長等待秒數
+
+        Returns:
+            更新後的訂單狀態 dict
+        """
+        status = order_result.get("status", "")
+        if status != "NEW":
+            return order_result
+
+        order_id = order_result.get("orderId")
+        if not order_id:
+            return order_result
+
+        logger.info(
+            f"Order status=NEW, polling for final status | "
+            f"orderId={order_id}"
+        )
+
+        deadline = time.time() + timeout_s
+        last_result = order_result
+        while time.time() < deadline:
+            time.sleep(0.3)
+            try:
+                queried = self.client.get_order(self.symbol, int(order_id))
+                last_result = queried
+                q_status = queried.get("status", "")
+                if q_status in ("FILLED", "PARTIALLY_FILLED",
+                                "CANCELED", "EXPIRED"):
+                    logger.info(
+                        f"Order resolved | orderId={order_id} "
+                        f"status={q_status} "
+                        f"avgPrice={queried.get('avgPrice')} "
+                        f"executedQty={queried.get('executedQty')}"
+                    )
+                    return queried
+            except Exception as e:
+                logger.warning(f"Order query failed: {e}")
+
+        logger.warning(
+            f"Order status poll timeout ({timeout_s}s) | "
+            f"orderId={order_id} last_status={last_result.get('status')}"
+        )
+        return last_result
+
+    def _check_exchange_position(self) -> int:
+        """
+        下單前查詢交易所實際持倉方向
+
+        Returns:
+            1=多, -1=空, 0=無倉位
+        """
+        try:
+            pos = self.client.get_position_risk(self.symbol)
+            if pos:
+                amt = float(pos.get("positionAmt", "0"))
+                if amt > 0:
+                    return 1
+                elif amt < 0:
+                    return -1
+            return 0
+        except Exception as e:
+            logger.warning(f"Pre-trade position check failed: {e}")
+            return 0  # 查詢失敗時不阻擋交易
 
     def _estimate_fee(self, price: float, quantity: float) -> float:
         """估算手續費（taker 0.04%）"""

@@ -90,6 +90,10 @@ class BinanceFuturesClient:
         self._request_count = 0
         self._last_request_time = 0.0
 
+        # Server time offset（本地 - 伺服器，毫秒）
+        self._time_offset_ms: int = 0
+        self._sync_server_time()
+
         env_label = "TESTNET" if testnet else "PRODUCTION"
         logger.info(f"Binance Futures Client initialized [{env_label}]")
         logger.info(f"  Base URL: {self.base_url}")
@@ -98,9 +102,30 @@ class BinanceFuturesClient:
     # 簽名與請求
     # ================================================================
 
+    def _sync_server_time(self) -> None:
+        """計算本地與 Binance 伺服器的時間偏移量"""
+        try:
+            local_ts = int(time.time() * 1000)
+            resp = self.session.get(
+                f"{self.base_url}/fapi/v1/time", timeout=5
+            )
+            if resp.status_code == 200:
+                server_ts = resp.json().get("serverTime", local_ts)
+                self._time_offset_ms = local_ts - server_ts
+                if abs(self._time_offset_ms) > 500:
+                    logger.warning(
+                        f"Server time offset: {self._time_offset_ms}ms "
+                        f"(local {'ahead' if self._time_offset_ms > 0 else 'behind'})"
+                    )
+                else:
+                    logger.info(f"Server time offset: {self._time_offset_ms}ms")
+        except Exception as e:
+            logger.warning(f"Server time sync failed: {e} — using local time")
+            self._time_offset_ms = 0
+
     def _sign(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """為 params 加入 timestamp 和 HMAC-SHA256 簽名"""
-        params["timestamp"] = int(time.time() * 1000)
+        """為 params 加入 timestamp（含 server offset 補償）和 HMAC-SHA256 簽名"""
+        params["timestamp"] = int(time.time() * 1000) - self._time_offset_ms
         query_string = urlencode(params)
         signature = hmac.new(
             self.api_secret.encode("utf-8"),
