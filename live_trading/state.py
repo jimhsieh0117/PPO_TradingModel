@@ -71,6 +71,13 @@ class TradingState:
         self.trade_count: int = 0
         self.daily_reset_date: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+        # === 交易歷史（供 Telegram 指令查詢） ===
+        self.trade_history: list = []        # 最近 100 筆交易記錄
+        self.daily_win_count: int = 0
+        self.daily_loss_count: int = 0
+        self.daily_max_pnl: float = 0.0
+        self.daily_min_pnl: float = 0.0
+
         # === 步數計數 ===
         self._step_count: int = 0
         self._last_close_step: int = -999
@@ -208,6 +215,10 @@ class TradingState:
             )
             self.daily_pnl = 0.0
             self.trade_count = 0
+            self.daily_win_count = 0
+            self.daily_loss_count = 0
+            self.daily_max_pnl = 0.0
+            self.daily_min_pnl = 0.0
             self.daily_reset_date = today
 
     def open_position(self, side: int, entry_price: float,
@@ -271,8 +282,18 @@ class TradingState:
 
         if pnl < 0:
             self.consecutive_losses += 1
+            self.daily_loss_count += 1
         else:
             self.consecutive_losses = 0
+            self.daily_win_count += 1
+        self.daily_max_pnl = max(self.daily_max_pnl, pnl)
+        self.daily_min_pnl = min(self.daily_min_pnl, pnl)
+
+        # 記錄到交易歷史（保留最近 100 筆）
+        record["close_time"] = datetime.now(timezone.utc).isoformat()
+        self.trade_history.append(record)
+        if len(self.trade_history) > 100:
+            self.trade_history.pop(0)
 
         self._last_close_step = self._step_count
 
