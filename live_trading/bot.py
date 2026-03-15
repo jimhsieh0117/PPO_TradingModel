@@ -19,6 +19,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +31,7 @@ project_root = str(Path(__file__).resolve().parents[1])
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from live_trading.command_handler import TelegramCommandHandler
 from live_trading.data_feed import DataFeed
 from live_trading.executor import Executor
 from live_trading.feature_engine import FeatureEngine
@@ -59,6 +61,10 @@ class TradingBot:
         self._shutdown_requested = False
         self._config_mtime: float = 0.0  # config 檔案最後修改時間
         self._last_processed_ts = None   # 去重：上一根已處理 K 線的時間戳
+        self._start_time: datetime = None  # 啟動時間（供 /status 指令使用）
+
+        # 倉位操作鎖（防止 Telegram 指令與 on_bar_close 競態）
+        self.position_lock = threading.Lock()
 
         # 所有模組在 _initialize() 中初始化
         self.client: BinanceFuturesClient = None
@@ -71,6 +77,7 @@ class TradingBot:
         self.tlogger: TradingLogger = None
         self.notifier = None
         self.snapshot: StateSnapshot = None
+        self.command_handler: TelegramCommandHandler = None
 
     # ================================================================
     # 啟動
@@ -193,6 +200,25 @@ class TradingBot:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
+        # 11. Telegram Command Handler（可選）
+        self._start_time = datetime.now(timezone.utc)
+        notif_cfg = cfg.get("notification", {})
+        tg_token = os.environ.get(
+            notif_cfg.get("telegram_bot_token_env", ""), ""
+        )
+        tg_chat_id = os.environ.get(
+            notif_cfg.get("telegram_chat_id_env", ""), ""
+        )
+        if tg_token and tg_chat_id:
+            self.command_handler = TelegramCommandHandler(
+                bot_token=tg_token,
+                authorized_chat_id=tg_chat_id,
+                bot_ref=self,
+                position_lock=self.position_lock,
+            )
+        else:
+            logger.info("Telegram command handler disabled (no token/chat_id)")
+
         env_label = "TESTNET" if exc_cfg["testnet"] else "PRODUCTION"
         logger.info(
             f"All modules initialized | "
@@ -274,68 +300,82 @@ class TradingBot:
 
             self.state.step(current_equity=current_equity)
 
-            # === 4. max_holding_steps 強制平倉 ===
-            if self.state.is_max_holding:
-                logger.info(
-                    f"Max holding steps reached ({self.state.holding_steps}) — "
-                    f"force closing"
-                )
-                result = self.executor.force_close(
-                    self.state, reason="max_holding_steps"
-                )
-                if result:
-                    self._handle_trade_result(result, obs, market_features,
-                                              current_price, action=0,
-                                              executed=True, risk_passed=True)
-                return
-
-            # === 5. 模型推論 ===
-            action = self.inference.predict(obs)
-
-            # === 6. 風控檢查 ===
-            estimated_notional = 0.0
-            if action in (1, 2):
-                estimated_notional = self.state.balance * self.executor.position_size_pct
-
-            allowed, block_reason = self.risk_manager.check(
-                action, self.state, self.data_feed, estimated_notional
-            )
-
-            # === 7. 執行或記錄 ===
-            if allowed:
-                atr = self.feature_engine.get_atr(buffer)
-                result = self.executor.execute(
-                    action, self.state, atr=atr, current_price=current_price
-                )
-                executed = result is not None
-                if executed:
-                    # 反向開倉時 result 是 list[dict]（平倉+開倉）
-                    results = result if isinstance(result, list) else [result]
-                    for r in results:
-                        self._handle_trade_result(r, obs, market_features,
-                                                  current_price, action,
-                                                  executed=True, risk_passed=True)
-                else:
-                    # HOLD 或無操作
-                    self.tlogger.log_decision(
-                        bar_close=current_price, action=action,
-                        executed=False, risk_passed=True,
-                        risk_block_reason=None,
-                        position_before=self.state.position,
-                        position_after=self.state.position,
-                        obs=obs,
-                    )
-            else:
+            # === 3.5 暫停檢查（Telegram /pause 指令） ===
+            if self.command_handler and self.command_handler.is_paused:
                 self.tlogger.log_decision(
-                    bar_close=current_price, action=action,
-                    executed=False, risk_passed=False,
-                    risk_block_reason=block_reason,
+                    bar_close=current_price, action=3,  # HOLD
+                    executed=False, risk_passed=True,
+                    risk_block_reason="paused_via_telegram",
                     position_before=self.state.position,
                     position_after=self.state.position,
                     obs=obs,
                 )
-                if block_reason:
-                    logger.info(f"Action {action} blocked: {block_reason}")
+                return
+
+            # === 4-7. 倉位操作（加鎖防止與 Telegram 指令競態） ===
+            with self.position_lock:
+                # === 4. max_holding_steps 強制平倉 ===
+                if self.state.is_max_holding:
+                    logger.info(
+                        f"Max holding steps reached ({self.state.holding_steps}) — "
+                        f"force closing"
+                    )
+                    result = self.executor.force_close(
+                        self.state, reason="max_holding_steps"
+                    )
+                    if result:
+                        self._handle_trade_result(result, obs, market_features,
+                                                  current_price, action=0,
+                                                  executed=True, risk_passed=True)
+                    return
+
+                # === 5. 模型推論 ===
+                action = self.inference.predict(obs)
+
+                # === 6. 風控檢查 ===
+                estimated_notional = 0.0
+                if action in (1, 2):
+                    estimated_notional = self.state.balance * self.executor.position_size_pct
+
+                allowed, block_reason = self.risk_manager.check(
+                    action, self.state, self.data_feed, estimated_notional
+                )
+
+                # === 7. 執行或記錄 ===
+                if allowed:
+                    atr = self.feature_engine.get_atr(buffer)
+                    result = self.executor.execute(
+                        action, self.state, atr=atr, current_price=current_price
+                    )
+                    executed = result is not None
+                    if executed:
+                        # 反向開倉時 result 是 list[dict]（平倉+開倉）
+                        results = result if isinstance(result, list) else [result]
+                        for r in results:
+                            self._handle_trade_result(r, obs, market_features,
+                                                      current_price, action,
+                                                      executed=True, risk_passed=True)
+                    else:
+                        # HOLD 或無操作
+                        self.tlogger.log_decision(
+                            bar_close=current_price, action=action,
+                            executed=False, risk_passed=True,
+                            risk_block_reason=None,
+                            position_before=self.state.position,
+                            position_after=self.state.position,
+                            obs=obs,
+                        )
+                else:
+                    self.tlogger.log_decision(
+                        bar_close=current_price, action=action,
+                        executed=False, risk_passed=False,
+                        risk_block_reason=block_reason,
+                        position_before=self.state.position,
+                        position_after=self.state.position,
+                        obs=obs,
+                    )
+                    if block_reason:
+                        logger.info(f"Action {action} blocked: {block_reason}")
 
             # === 8. 心跳 ===
             if self.notifier.check_heartbeat_due():
@@ -451,8 +491,14 @@ class TradingBot:
         """等待 WebSocket 事件（主執行緒保持活躍）"""
         logger.info("Main loop running — waiting for kline events...")
 
+        poll_counter = 0
         while not self._shutdown_requested:
             time.sleep(1)
+            poll_counter += 1
+
+            # Telegram 指令 polling（每 3 秒）
+            if self.command_handler and poll_counter % 3 == 0:
+                self.command_handler.poll()
 
             # 檢查 WebSocket 連線
             if not self.data_feed.is_connected:
