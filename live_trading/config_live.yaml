@@ -73,7 +73,7 @@ notification:
   telegram_chat_id_env: "TELEGRAM_CHAT_ID"
   notify_on_trade: true            # 每筆交易通知
   notify_on_error: true            # 錯誤通知
-  notify_heartbeat_minutes: 60     # 每小時心跳
+  notify_heartbeat_minutes: 30     # 每半小時心跳
 
 # === 日誌 ===
 logging:

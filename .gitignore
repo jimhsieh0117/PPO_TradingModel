@@ -128,5 +128,11 @@ Desktop.ini
 !models/.gitkeep
 !logs/.gitkeep
 
+# === Live Trading 運行時檔案 ===
+live_trading/state_snapshot.json
+live_trading/bot.pid
+live_trading/STOP
+live_trading/logs/
+
 # === 特殊：保留配置範例但不保留實際配置 ===
 # config.yaml  # 如果包含敏感資訊，取消註釋此行

@@ -108,9 +108,12 @@ class Notifier:
     def send_trade_open(self, symbol: str, side: str, price: float,
                         quantity: float, sl_price: float) -> None:
         """推送開倉通知"""
+        direction = "做多" if side == "BUY" else "做空"
+        notional = price * quantity
         msg = (
-            f"{PREFIX_TRADE} {symbol} {side} @ {price:.2f}\n"
+            f"{PREFIX_TRADE} {symbol} {direction} @ {price:.2f}\n"
             f"  數量: {quantity}\n"
+            f"  倉位價值: {notional:.2f}U\n"
             f"  止損: {sl_price:.2f}"
         )
         self.send_trade(msg)
@@ -120,10 +123,10 @@ class Notifier:
                          holding_minutes: int,
                          reason: str = "model") -> None:
         """推送平倉通知"""
-        pnl_sign = "+" if pnl >= 0 else ""
+        result = "賺" if pnl >= 0 else "賠"
         msg = (
             f"{PREFIX_TRADE} {symbol} 平倉 @ {price:.2f}\n"
-            f"  PnL: {pnl_sign}{pnl:.2f} ({pnl_sign}{pnl_pct:.2f}%)\n"
+            f"  {result} {abs(pnl):.4f}U ({pnl:+.2f}%)\n"
             f"  持倉: {holding_minutes} 分鐘\n"
             f"  原因: {reason}"
         )
