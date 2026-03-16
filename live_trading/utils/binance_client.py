@@ -92,6 +92,8 @@ class BinanceFuturesClient:
 
         # Server time offset（本地 - 伺服器，毫秒）
         self._time_offset_ms: int = 0
+        self._last_time_sync: float = 0.0
+        self._time_sync_interval: float = 1800.0  # 每 30 分鐘重新校正
         self._sync_server_time()
 
         env_label = "TESTNET" if testnet else "PRODUCTION"
@@ -112,6 +114,7 @@ class BinanceFuturesClient:
             if resp.status_code == 200:
                 server_ts = resp.json().get("serverTime", local_ts)
                 self._time_offset_ms = local_ts - server_ts
+                self._last_time_sync = time.time()
                 if abs(self._time_offset_ms) > 500:
                     logger.warning(
                         f"Server time offset: {self._time_offset_ms}ms "
@@ -121,10 +124,12 @@ class BinanceFuturesClient:
                     logger.info(f"Server time offset: {self._time_offset_ms}ms")
         except Exception as e:
             logger.warning(f"Server time sync failed: {e} — using local time")
-            self._time_offset_ms = 0
 
     def _sign(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """為 params 加入 timestamp（含 server offset 補償）和 HMAC-SHA256 簽名"""
+        # 定期重新校正時間偏移（Windows 時鐘容易漂移）
+        if time.time() - self._last_time_sync > self._time_sync_interval:
+            self._sync_server_time()
         params["timestamp"] = int(time.time() * 1000) - self._time_offset_ms
         query_string = urlencode(params)
         signature = hmac.new(
