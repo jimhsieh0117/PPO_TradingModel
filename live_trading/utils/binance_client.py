@@ -405,55 +405,68 @@ class BinanceFuturesClient:
         )
         return result
 
-    def place_stop_order(self, symbol: str, side: str,
-                         stop_price: float, quantity: float) -> Dict:
+    def place_algo_stop(self, symbol: str, side: str,
+                        stop_price: float,
+                        quantity: Optional[float] = None,
+                        close_position: bool = True) -> Dict:
         """
-        發送 STOP 止損單（STOP_LIMIT, reduce-only）
+        透過 Algo Order API 發送 STOP_MARKET 止損單
 
-        使用 STOP 類型（限價觸發單）取代 STOP_MARKET，
-        因為幣安已將 STOP_MARKET 移至 Algo Order API。
-
-        limit price 設為比 stop price 更不利的價格以確保觸發後立即成交：
-        - SELL 止損：limit = stop_price × 0.995（低 0.5%）
-        - BUY 止損：limit = stop_price × 1.005（高 0.5%）
+        幣安於 2025-12-09 將所有條件單遷移至 /fapi/v1/algoOrder。
+        舊端點 /fapi/v1/order 不再支援 STOP/STOP_MARKET 類型。
 
         Args:
             symbol: 交易對
             side: "BUY"（空單止損）/ "SELL"（多單止損）
             stop_price: 觸發價格
-            quantity: 平倉數量
+            quantity: 平倉數量（close_position=True 時可省略）
+            close_position: True = 觸發時平掉全部持倉
 
         Returns:
-            止損單結果
+            Algo 訂單結果（含 algoId）
         """
-        # limit price 設得比 stop price 更差，確保觸發後一定成交
-        if side == "SELL":
-            limit_price = stop_price * 0.995
-        else:
-            limit_price = stop_price * 1.005
-
         params = {
             "symbol": symbol,
             "side": side,
-            "type": "STOP",
-            "timeInForce": "GTC",
-            "quantity": self._format_quantity(quantity, symbol),
-            "price": self._format_price(limit_price, symbol),
-            "stopPrice": self._format_price(stop_price, symbol),
+            "type": "STOP_MARKET",
+            "triggerPrice": self._format_price(stop_price, symbol),
             "workingType": "MARK_PRICE",
-            "reduceOnly": "true",
         }
 
+        if close_position:
+            params["closePosition"] = "true"
+        else:
+            if quantity is None:
+                raise ValueError("quantity required when close_position=False")
+            params["quantity"] = self._format_quantity(quantity, symbol)
+            params["reduceOnly"] = "true"
+
         logger.info(
-            f"STOP ORDER | {side} {quantity} {symbol} "
-            f"stopPrice={stop_price:.2f} limitPrice={limit_price:.2f}"
+            f"ALGO STOP ORDER | {side} {symbol} "
+            f"triggerPrice={stop_price:.2f}"
         )
-        result = self._request("POST", "/fapi/v1/order", params=params)
-        logger.info(f"STOP ORDER PLACED | orderId={result.get('orderId')}")
+        result = self._request("POST", "/fapi/v1/algoOrder", params=params)
+        logger.info(
+            f"ALGO STOP PLACED | algoId={result.get('algoId')}"
+        )
         return result
 
+    def cancel_algo_order(self, symbol: str, algo_id: str) -> Dict:
+        """取消 Algo 止損單（/fapi/v1/algoOrder 的訂單不受 cancel_all_orders 影響）"""
+        logger.info(f"CANCEL ALGO ORDER | {symbol} algoId={algo_id}")
+        return self._request("DELETE", "/fapi/v1/algoOrder", params={
+            "symbol": symbol,
+            "algoId": int(algo_id),
+        })
+
+    def get_algo_open_orders(self, symbol: str) -> List[Dict]:
+        """查詢所有未觸發的 Algo 掛單"""
+        return self._request("GET", "/fapi/v1/algoOpenOrders", params={
+            "symbol": symbol,
+        })
+
     def cancel_order(self, symbol: str, order_id: int) -> Dict:
-        """取消指定訂單"""
+        """取消指定訂單（標準訂單）"""
         logger.info(f"CANCEL ORDER | {symbol} orderId={order_id}")
         return self._request("DELETE", "/fapi/v1/order", params={
             "symbol": symbol,

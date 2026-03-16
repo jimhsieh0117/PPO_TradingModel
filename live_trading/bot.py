@@ -300,7 +300,31 @@ class TradingBot:
 
             self.state.step(current_equity=current_equity)
 
-            # === 3.5 暫停檢查（Telegram /pause 指令） ===
+            # === 3.5 Client-side 止損檢查（Algo SL 的 backup） ===
+            if self.state.position != 0 and self.state.current_sl > 0:
+                sl_hit = False
+                if self.state.position == 1 and current_price <= self.state.current_sl:
+                    sl_hit = True
+                elif self.state.position == -1 and current_price >= self.state.current_sl:
+                    sl_hit = True
+                if sl_hit:
+                    logger.warning(
+                        f"Client-side SL triggered | "
+                        f"price={current_price:.2f} sl={self.state.current_sl:.2f}"
+                    )
+                    with self.position_lock:
+                        result = self.executor.force_close(
+                            self.state, reason="client_side_sl"
+                        )
+                        if result:
+                            self._handle_trade_result(
+                                result, obs, market_features,
+                                current_price, action=0,
+                                executed=True, risk_passed=True,
+                            )
+                    return
+
+            # === 3.6 暫停檢查（Telegram /pause 指令） ===
             if self.command_handler and self.command_handler.is_paused:
                 self.tlogger.log_decision(
                     bar_close=current_price, action=3,  # HOLD
@@ -413,6 +437,14 @@ class TradingBot:
 
         if "entry_price" in result and "exit_price" not in result:
             # 開倉
+            if result.get("error") == "stop_order_failed":
+                # SL 失敗 + 緊急平倉 — 不更新 state（已在 exchange 平倉）
+                self.notifier.send_emergency_close(
+                    symbol=result["symbol"],
+                    reason="止損單下單失敗，已緊急市價平倉",
+                )
+                return
+
             side = 1 if result["side"] == "BUY" else -1
             self.state.open_position(
                 side=side,

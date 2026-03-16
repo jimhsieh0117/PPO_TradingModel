@@ -184,7 +184,7 @@ class TelegramCommandHandler:
             "/pause — 暫停交易\n"
             "/resume — 恢復交易\n"
             "/stop — 關閉 bot\n"
-            "/force_close — 強制平倉\n"
+            "/force_close — 強制平倉\n須在30秒內再發/force_close confirm確認執行才行\n"
             "/mode1 — 通知靜音\n"
             "/mode2 — 僅平倉通知\n"
             "/mode3 — 開倉+平倉通知\n"

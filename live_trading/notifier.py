@@ -139,6 +139,13 @@ class Notifier:
         )
         self.send_trade(msg)
 
+    def send_emergency_close(self, symbol: str, reason: str) -> None:
+        """推送緊急平倉通知（無視通知模式，永遠發送）"""
+        self._send(
+            f"{PREFIX_ERROR} {symbol} 緊急平倉!\n"
+            f"  原因: {reason}"
+        )
+
     def send_risk_warning(self, message: str) -> None:
         """推送風控警告"""
         self._send(f"{PREFIX_RISK} {message}")

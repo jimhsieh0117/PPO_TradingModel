@@ -234,37 +234,25 @@ class Executor:
             # Step 2: 計算止損價（用實際成交均價）
             sl_price = self._calculate_stop_loss(side, avg_price, atr)
 
-            # Step 3: 掛止損單（獨立 try/except，SL 失敗不影響開倉結果）
+            # Step 3: 掛止損單（Algo Order API，獨立 try/except）
             sl_side = "SELL" if side == 1 else "BUY"
             sl_order_id = ""
             sl_ok = False
             try:
-                sl_result = self.client.place_stop_order(
-                    self.symbol, sl_side, sl_price, quantity=executed_qty
+                sl_result = self.client.place_algo_stop(
+                    self.symbol, sl_side, sl_price,
+                    close_position=True,
                 )
-                sl_order_id = str(sl_result.get("orderId", ""))
-
-                # Step 4: 驗證止損單存在
-                sl_ok = self._verify_stop_order(sl_order_id)
+                sl_order_id = str(sl_result.get("algoId", ""))
+                sl_ok = bool(sl_order_id)
             except Exception as e:
-                logger.error(f"Stop order placement failed: {e}")
+                logger.error(f"Algo stop order failed: {e}")
 
             if not sl_ok:
-                logger.critical(
-                    "STOP ORDER FAILED — emergency closing position!"
+                # Algo SL 失敗 — 不緊急平倉，改用 client-side SL backup
+                logger.warning(
+                    "Algo stop order failed — relying on client-side SL"
                 )
-                self._emergency_close(side)
-                return {
-                    "action": ACTION_LONG if side == 1 else ACTION_SHORT,
-                    "symbol": self.symbol,
-                    "side": order_side,
-                    "entry_price": avg_price,
-                    "quantity": executed_qty,
-                    "fee": fee,
-                    "sl_price": sl_price,
-                    "order_id": order_id,
-                    "error": "stop_order_failed",
-                }
 
             logger.info(
                 f"Position opened successfully | "
@@ -354,13 +342,18 @@ class Executor:
             order_id = order_result.get("orderId", "")
             fee = self._estimate_fee(exit_price, state.quantity)
 
-            # Step 2: 取消止損單
+            # Step 2: 取消止損單（Algo Order）
             if state.sl_order_id:
                 try:
-                    self.client.cancel_order(self.symbol, int(state.sl_order_id))
+                    self.client.cancel_algo_order(self.symbol, state.sl_order_id)
                 except BinanceClientError as e:
                     # 止損單可能已被觸發或過期
-                    logger.warning(f"Cancel SL order failed (may already be filled): {e}")
+                    logger.warning(f"Cancel algo SL failed (may already triggered): {e}")
+                    # Fallback：嘗試標準取消（以防舊格式）
+                    try:
+                        self.client.cancel_order(self.symbol, int(state.sl_order_id))
+                    except Exception:
+                        pass
 
             # Step 3: 計算 PnL
             if state.position == 1:
@@ -597,8 +590,18 @@ class Executor:
         """緊急平倉（止損單驗證失敗時）"""
         try:
             close_side = "SELL" if side == 1 else "BUY"
-            # 用 cancel all + close position
+            # 取消所有標準掛單
             self.client.cancel_all_orders(self.symbol)
+            # 取消所有 Algo 掛單
+            try:
+                algo_orders = self.client.get_algo_open_orders(self.symbol)
+                if isinstance(algo_orders, list):
+                    for ao in algo_orders:
+                        aid = ao.get("algoId")
+                        if aid:
+                            self.client.cancel_algo_order(self.symbol, str(aid))
+            except Exception:
+                pass
             # 查詢實際持倉數量
             pos = self.client.get_position_risk(self.symbol)
             if pos:

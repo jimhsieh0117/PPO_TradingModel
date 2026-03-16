@@ -28,8 +28,8 @@ trading:
 
 # === 模型 ===
 model:
-  # path: "models/run_ETHUSDT_20260315_002606/ppo_trading_model_final.zip"  #mac 使用路徑
-  path: "models/Using_Model/ppo_trading_model_final.zip"  #windows 使用路徑
+  path: "models/run_ETHUSDT_20260315_002606/ppo_trading_model_final.zip"  #mac 使用路徑
+  # path: "models/Using_Model/ppo_trading_model_final.zip"  #windows 使用路徑
 
   expected_md5: "bf3b7279775d80da3a1ee0c48fd725fa"  # ppo_trading_model_best.zip MD5
   use_lstm: false
