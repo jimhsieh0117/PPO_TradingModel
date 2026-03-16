@@ -234,18 +234,24 @@ class Executor:
             # Step 2: 計算止損價（用實際成交均價）
             sl_price = self._calculate_stop_loss(side, avg_price, atr)
 
-            # Step 3: 掛止損單
+            # Step 3: 掛止損單（獨立 try/except，SL 失敗不影響開倉結果）
             sl_side = "SELL" if side == 1 else "BUY"
-            sl_result = self.client.place_stop_market(
-                self.symbol, sl_side, sl_price, close_position=True
-            )
-            sl_order_id = str(sl_result.get("orderId", ""))
+            sl_order_id = ""
+            sl_ok = False
+            try:
+                sl_result = self.client.place_stop_order(
+                    self.symbol, sl_side, sl_price, quantity=executed_qty
+                )
+                sl_order_id = str(sl_result.get("orderId", ""))
 
-            # Step 4: 驗證止損單存在
-            if not self._verify_stop_order(sl_order_id):
+                # Step 4: 驗證止損單存在
+                sl_ok = self._verify_stop_order(sl_order_id)
+            except Exception as e:
+                logger.error(f"Stop order placement failed: {e}")
+
+            if not sl_ok:
                 logger.critical(
-                    "STOP ORDER VERIFICATION FAILED — "
-                    "emergency closing position!"
+                    "STOP ORDER FAILED — emergency closing position!"
                 )
                 self._emergency_close(side)
                 return {
@@ -257,7 +263,7 @@ class Executor:
                     "fee": fee,
                     "sl_price": sl_price,
                     "order_id": order_id,
-                    "error": "stop_order_verification_failed",
+                    "error": "stop_order_failed",
                 }
 
             logger.info(

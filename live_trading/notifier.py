@@ -62,6 +62,9 @@ class Notifier:
         self.notify_on_error = config.get("notify_on_error", True)
         self.heartbeat_interval = config.get("notify_heartbeat_minutes", 60) * 60
 
+        # 交易通知模式：1=靜音, 2=僅平倉, 3=開倉+平倉
+        self.trade_notify_mode = config.get("trade_notify_mode", 3)
+
         # Rate limiting
         self._last_send_time = 0.0
         self._min_interval = 1.0  # 最少間隔 1 秒
@@ -107,7 +110,9 @@ class Notifier:
 
     def send_trade_open(self, symbol: str, side: str, price: float,
                         quantity: float, sl_price: float) -> None:
-        """推送開倉通知"""
+        """推送開倉通知（trade_notify_mode >= 3 時發送）"""
+        if self.trade_notify_mode < 3:
+            return
         direction = "做多" if side == "BUY" else "做空"
         notional = price * quantity
         msg = (
@@ -122,7 +127,9 @@ class Notifier:
                          pnl: float, pnl_pct: float,
                          holding_minutes: int,
                          reason: str = "model") -> None:
-        """推送平倉通知"""
+        """推送平倉通知（trade_notify_mode >= 2 時發送）"""
+        if self.trade_notify_mode < 2:
+            return
         result = "賺" if pnl >= 0 else "賠"
         msg = (
             f"{PREFIX_TRADE} {symbol} 平倉 @ {price:.2f}\n"

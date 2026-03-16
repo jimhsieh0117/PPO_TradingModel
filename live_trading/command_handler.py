@@ -59,6 +59,9 @@ class TelegramCommandHandler:
             "/risk": self._cmd_risk,
             "/config": self._cmd_config,
             "/force_close": self._cmd_force_close,
+            "/mode1": self._cmd_mode1,
+            "/mode2": self._cmd_mode2,
+            "/mode3": self._cmd_mode3,
         }
 
         # 啟動時清除舊訊息（避免處理離線期間累積的指令）
@@ -168,19 +171,24 @@ class TelegramCommandHandler:
     # ================================================================
 
     def _cmd_help(self, chat_id: str) -> None:
+        mode = self._bot.notifier.trade_notify_mode
+        mode_label = {1: "靜音", 2: "僅平倉", 3: "開倉+平倉"}.get(mode, "?")
         msg = (
             "<b>Available Commands</b>\n\n"
-            "/help — Show this message. 顯示所有可用指令及說明\n"
-            "/status — Balance, position, daily PnL, uptime. 餘額、權益、持倉方向、日/總 PnL、今日交易數、運行時間、步數\n"
-            "/position — Current position details. 當前持倉詳情：方向、入場價、數量、止損價、當前價、浮動盈虧、持倉時間\n"
-            "/today — Today's trade summary. 今日統計：交易數、勝/敗次數、勝率、日0PnL、最佳/最差單筆\n"
-            "/trades [N] — Recent N trades (default 5). 最近 N 筆交易紀錄（預設 5，最多 20），顯示方向、PnL、持倉時間、平倉原因\n"
-            "/risk — Risk manager status. 風控狀態：日 PnL、連敗次數、斷路器狀態、API 錯誤數、待機/kill switch\n"
-            "/config — Key config parameters. 關鍵配置：交易對、槓桿、倉位比例、ATR 止損、最大持倉、模型名稱\n"
-            "/pause — Pause trading (bot keeps running). 暫停交易（bot 持續運行，現有倉位保留，但不開新倉）\n"
-            "/resume — Resume trading. 恢復交易\n"
-            "/stop — Graceful shutdown. 優雅關閉 bot（依 shutdown_action 決定是平倉還是保留止損）\n"
-            "/force_close — Force close position (requires confirm). 強制平倉，需 30 秒內再發 /force_close confirm 確認才執行"
+            "/status — 餘額、持倉、PnL、運行時間\n"
+            "/position — 持倉詳情\n"
+            "/today — 今日統計\n"
+            "/trades [N] — 最近 N 筆交易\n"
+            "/risk — 風控狀態\n"
+            "/config — 關鍵配置\n"
+            "/pause — 暫停交易\n"
+            "/resume — 恢復交易\n"
+            "/stop — 關閉 bot\n"
+            "/force_close — 強制平倉\n"
+            "/mode1 — 通知靜音\n"
+            "/mode2 — 僅平倉通知\n"
+            "/mode3 — 開倉+平倉通知\n"
+            f"\n目前通知模式: <b>{mode_label}</b>"
         )
         self._reply(chat_id, msg)
 
@@ -343,6 +351,21 @@ class TelegramCommandHandler:
         self._paused = False
         logger.info("Trading RESUMED via Telegram command")
         self._reply(chat_id, "Trading resumed.")
+
+    def _cmd_mode1(self, chat_id: str) -> None:
+        self._bot.notifier.trade_notify_mode = 1
+        logger.info("Trade notify mode set to 1 (silent)")
+        self._reply(chat_id, "通知模式: <b>靜音</b>")
+
+    def _cmd_mode2(self, chat_id: str) -> None:
+        self._bot.notifier.trade_notify_mode = 2
+        logger.info("Trade notify mode set to 2 (close only)")
+        self._reply(chat_id, "通知模式: <b>僅平倉通知</b>")
+
+    def _cmd_mode3(self, chat_id: str) -> None:
+        self._bot.notifier.trade_notify_mode = 3
+        logger.info("Trade notify mode set to 3 (open+close)")
+        self._reply(chat_id, "通知模式: <b>開倉+平倉通知</b>")
 
     def _cmd_stop(self, chat_id: str) -> None:
         self._reply(chat_id, "Shutting down bot...")

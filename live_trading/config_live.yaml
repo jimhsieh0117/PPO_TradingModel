@@ -74,6 +74,7 @@ notification:
   notify_on_trade: true            # 每筆交易通知
   notify_on_error: true            # 錯誤通知
   notify_heartbeat_minutes: 30     # 每半小時心跳
+  trade_notify_mode: 3             # 1=靜音 2=僅平倉通知 3=開倉+平倉通知
 
 # === 日誌 ===
 logging:

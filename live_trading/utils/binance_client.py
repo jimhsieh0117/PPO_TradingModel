@@ -400,42 +400,48 @@ class BinanceFuturesClient:
         )
         return result
 
-    def place_stop_market(self, symbol: str, side: str,
-                          stop_price: float,
-                          close_position: bool = True,
-                          quantity: Optional[float] = None) -> Dict:
+    def place_stop_order(self, symbol: str, side: str,
+                         stop_price: float, quantity: float) -> Dict:
         """
-        發送 STOP_MARKET 止損單（reduce-only）
+        發送 STOP 止損單（STOP_LIMIT, reduce-only）
+
+        使用 STOP 類型（限價觸發單）取代 STOP_MARKET，
+        因為幣安已將 STOP_MARKET 移至 Algo Order API。
+
+        limit price 設為比 stop price 更不利的價格以確保觸發後立即成交：
+        - SELL 止損：limit = stop_price × 0.995（低 0.5%）
+        - BUY 止損：limit = stop_price × 1.005（高 0.5%）
 
         Args:
             symbol: 交易對
             side: "BUY"（空單止損）/ "SELL"（多單止損）
             stop_price: 觸發價格
-            close_position: True = closePosition 模式（平掉全部持倉）
-            quantity: close_position=False 時需指定數量
+            quantity: 平倉數量
 
         Returns:
             止損單結果
         """
+        # limit price 設得比 stop price 更差，確保觸發後一定成交
+        if side == "SELL":
+            limit_price = stop_price * 0.995
+        else:
+            limit_price = stop_price * 1.005
+
         params = {
             "symbol": symbol,
             "side": side,
-            "type": "STOP_MARKET",
+            "type": "STOP",
+            "timeInForce": "GTC",
+            "quantity": self._format_quantity(quantity, symbol),
+            "price": self._format_price(limit_price, symbol),
             "stopPrice": self._format_price(stop_price, symbol),
-            "workingType": "MARK_PRICE",  # 用標記價格觸發，防止插針
+            "workingType": "MARK_PRICE",
+            "reduceOnly": "true",
         }
 
-        if close_position:
-            params["closePosition"] = "true"
-        else:
-            if quantity is None:
-                raise ValueError("quantity required when close_position=False")
-            params["quantity"] = self._format_quantity(quantity, symbol)
-            params["reduceOnly"] = "true"
-
         logger.info(
-            f"STOP_MARKET ORDER | {side} {symbol} "
-            f"stopPrice={stop_price}"
+            f"STOP ORDER | {side} {quantity} {symbol} "
+            f"stopPrice={stop_price:.2f} limitPrice={limit_price:.2f}"
         )
         result = self._request("POST", "/fapi/v1/order", params=params)
         logger.info(f"STOP ORDER PLACED | orderId={result.get('orderId')}")
