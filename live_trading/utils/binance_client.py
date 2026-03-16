@@ -428,6 +428,7 @@ class BinanceFuturesClient:
         params = {
             "symbol": symbol,
             "side": side,
+            "algoType": "CONDITIONAL",
             "type": "STOP_MARKET",
             "triggerPrice": self._format_price(stop_price, symbol),
             "workingType": "MARK_PRICE",

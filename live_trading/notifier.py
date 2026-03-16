@@ -111,7 +111,7 @@ class Notifier:
     def send_trade_open(self, symbol: str, side: str, price: float,
                         quantity: float, sl_price: float) -> None:
         """推送開倉通知（trade_notify_mode >= 3 時發送）"""
-        if self.trade_notify_mode < 3:
+        if not self.notify_on_trade or self.trade_notify_mode < 3:
             return
         direction = "做多" if side == "BUY" else "做空"
         notional = price * quantity
@@ -121,23 +121,23 @@ class Notifier:
             f"  倉位價值: {notional:.2f}U\n"
             f"  止損: {sl_price:.2f}"
         )
-        self.send_trade(msg)
+        self._send(msg)
 
     def send_trade_close(self, symbol: str, price: float,
                          pnl: float, pnl_pct: float,
                          holding_minutes: int,
                          reason: str = "model") -> None:
         """推送平倉通知（trade_notify_mode >= 2 時發送）"""
-        if self.trade_notify_mode < 2:
+        if not self.notify_on_trade or self.trade_notify_mode < 2:
             return
         result = "賺" if pnl >= 0 else "賠"
         msg = (
             f"{PREFIX_TRADE} {symbol} 平倉 @ {price:.2f}\n"
-            f"  {result} {abs(pnl):.4f}U ({pnl:+.2f}%)\n"
+            f"  {result} {abs(pnl):.4f}U ({pnl_pct:+.2f}%)\n"
             f"  持倉: {holding_minutes} 分鐘\n"
             f"  原因: {reason}"
         )
-        self.send_trade(msg)
+        self._send(msg)
 
     def send_emergency_close(self, symbol: str, reason: str) -> None:
         """推送緊急平倉通知（無視通知模式，永遠發送）"""
