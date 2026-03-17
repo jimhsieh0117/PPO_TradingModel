@@ -313,7 +313,8 @@ class Executor:
                 limit_price = last_price * (1 + self.max_slippage_pct)
 
             order_result = self.client.place_limit_ioc(
-                self.symbol, close_side, state.quantity, limit_price
+                self.symbol, close_side, state.quantity, limit_price,
+                reduce_only=True,
             )
 
             # 收到 NEW 時輪詢最終狀態
@@ -330,7 +331,8 @@ class Executor:
                         f"fallback to market for {remaining}"
                     )
                     order_result = self.client.place_market_order(
-                        self.symbol, close_side, remaining
+                        self.symbol, close_side, remaining,
+                        reduce_only=True,
                     )
                     status = order_result.get("status", "")
 
@@ -387,6 +389,13 @@ class Executor:
             }
 
         except BinanceClientError as e:
+            # reduceOnly 被拒 = 交易所已無倉位（Algo SL 已觸發）
+            if e.error_code == -2022:
+                logger.warning(
+                    "reduceOnly order rejected — exchange has no position "
+                    "(Algo SL likely already triggered)"
+                )
+                return {"_algo_sl_fired": True, "reason": reason}
             logger.error(f"Close position failed: {e}")
             return None
         except Exception as e:

@@ -312,6 +312,20 @@ class TradingBot:
                         f"Client-side SL triggered | "
                         f"price={current_price:.2f} sl={self.state.current_sl:.2f}"
                     )
+                    # 先查交易所是否還有倉位（Algo SL 可能已觸發）
+                    exchange_pos = self.executor._check_exchange_position()
+                    if exchange_pos == 0:
+                        logger.warning(
+                            "SL triggered but exchange has no position — "
+                            "Algo SL likely already fired, clearing local state"
+                        )
+                        self.state.close_position(
+                            exit_price=current_price,
+                            pnl=0.0,
+                            fee=0.0,
+                            reason="algo_sl_fired(client_side_sl)",
+                        )
+                        return
                     with self.position_lock:
                         result = self.executor.force_close(
                             self.state, reason="client_side_sl"
@@ -433,6 +447,20 @@ class TradingBot:
                              current_price: float, action: int,
                              executed: bool, risk_passed: bool) -> None:
         """處理交易結果：更新 state + 記錄 + 通知"""
+        # Algo SL 已觸發 — 交易所無倉位，只清本地 state
+        if result.get("_algo_sl_fired"):
+            logger.info(
+                "Algo SL already fired on exchange — "
+                "clearing local state without sending order"
+            )
+            self.state.close_position(
+                exit_price=current_price,
+                pnl=0.0,  # 真實 PnL 已由 Algo SL 結算
+                fee=0.0,
+                reason=f"algo_sl_fired({result.get('reason', '')})",
+            )
+            return
+
         position_before = self.state.position
 
         if "entry_price" in result and "exit_price" not in result:

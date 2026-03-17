@@ -224,11 +224,16 @@ class BinanceFuturesClient:
         return self._request("GET", "/fapi/v2/account")
 
     def get_balance(self) -> float:
-        """取得 USDT 可用餘額"""
+        """取得 USDT 錢包餘額（totalWalletBalance，不扣保證金）"""
         account = self.get_account()
+        # 優先使用帳戶級別的 totalWalletBalance（最準確）
+        total = account.get("totalWalletBalance")
+        if total is not None:
+            return float(total)
+        # fallback: 從 assets 中找
         for asset in account.get("assets", []):
             if asset["asset"] == "USDT":
-                return float(asset["availableBalance"])
+                return float(asset["walletBalance"])
         return 0.0
 
     def get_position_risk(self, symbol: str) -> Optional[Dict]:
@@ -333,7 +338,8 @@ class BinanceFuturesClient:
             raise
 
     def place_market_order(self, symbol: str, side: str,
-                           quantity: float) -> Dict:
+                           quantity: float,
+                           reduce_only: bool = False) -> Dict:
         """
         發送市價單
 
@@ -341,6 +347,7 @@ class BinanceFuturesClient:
             symbol: 交易對 (e.g. "ETHUSDT")
             side: "BUY" / "SELL"
             quantity: 下單數量
+            reduce_only: True = 僅減倉，不會意外開新倉
 
         Returns:
             訂單成交結果
@@ -354,6 +361,8 @@ class BinanceFuturesClient:
             "type": "MARKET",
             "quantity": self._format_quantity(quantity, symbol),
         }
+        if reduce_only:
+            params["reduceOnly"] = "true"
 
         logger.info(f"MARKET ORDER | {side} {quantity} {symbol}")
         result = self._request("POST", "/fapi/v1/order", params=params)
@@ -366,7 +375,8 @@ class BinanceFuturesClient:
         return result
 
     def place_limit_ioc(self, symbol: str, side: str,
-                        quantity: float, price: float) -> Dict:
+                        quantity: float, price: float,
+                        reduce_only: bool = False) -> Dict:
         """
         發送限價 IOC 單（Immediate-Or-Cancel）
 
@@ -379,6 +389,7 @@ class BinanceFuturesClient:
             side: "BUY" / "SELL"
             quantity: 下單數量
             price: 限價（BUY 的上限 / SELL 的下限）
+            reduce_only: True = 僅減倉，不會意外開新倉
 
         Returns:
             訂單結果（status 可能為 FILLED / PARTIALLY_FILLED / EXPIRED）
@@ -391,6 +402,8 @@ class BinanceFuturesClient:
             "quantity": self._format_quantity(quantity, symbol),
             "price": self._format_price(price, symbol),
         }
+        if reduce_only:
+            params["reduceOnly"] = "true"
 
         logger.info(
             f"LIMIT IOC ORDER | {side} {quantity} {symbol} @ {price:.2f}"
