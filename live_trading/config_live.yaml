@@ -18,8 +18,8 @@ exchange:
 trading:
   symbol: "ETHUSDT"
   leverage: 1                      # 與訓練一致（run_ETHUSDT_20260311_230121: leverage=1）
-  position_size_pct: 0.20          # 與訓練一致（run_ETHUSDT_20260311_230121: 0.20）
-                                   # 實際曝險 = 1x leverage × 20% = 0.20x
+  position_size_pct: 0.40          # 倉位資金使用比例
+                                   # 實際曝險 = 1x leverage x position_size_pct
   margin_type: "CROSSED"           # 全倉模式
   taker_fee: 0.0004               # 與訓練一致（記錄用，實盤依 VIP 等級）
   slippage: 0.0                   # 實盤為真實滑點，不額外加
