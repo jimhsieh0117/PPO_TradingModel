@@ -12,7 +12,7 @@ data/processed/
 *.parquet
 *.h5
 *.hdf5
-.claude
+
 
 # === 訓練好的模型（檔案太大）===
 models/*/model_*.zip
@@ -136,3 +136,10 @@ live_trading/logs/
 
 # === 特殊：保留配置範例但不保留實際配置 ===
 # config.yaml  # 如果包含敏感資訊，取消註釋此行
+參數建議.md
+參數建議.xls
+超參數優化方案.md
+
+# === Claude AI 相關 ===
+CLAUDE.md
+.claude/
