@@ -28,9 +28,10 @@
 |------|-----|------|
 | 交易標的 | 幣安永續合約 | 支援 BTCUSDT / ETHUSDT / SOLUSDT / WIFUSDT |
 | 時間框架 | 1分K | 短線交易 |
-| 槓桿 / 倉位 | 1x / 100% | 全倉無槓桿 |
-| 止損 | 2x ATR | 動態止損 + 追蹤止損（1.5% fallback） |
-| 手續費 | 0.04% taker | 開+平 = 每筆 0.08%（訓練必須啟用） |
+| 槓桿 | 1x | 全倉無槓桿 |
+| 倉位比例 | 40% | 每次開倉使用 40% 資金 |
+| 止損 | 2x ATR | 動態止損 + 追蹤止損（2% fallback） |
+| 手續費 | 0.06% taker | 開+平 = 每筆 0.12%（訓練必須啟用） |
 | 初始資金 | 1,000,000 USDT | 回測用 |
 
 ---
@@ -38,17 +39,18 @@
 ## 模型設計
 
 - **動作空間**：Discrete(4) — 平倉 / 做多 / 做空 / 持有
-- **觀察空間**：31 維 = 26 市場特徵 + 5 持倉狀態（詳見 `docs/FEATURE_SPEC.md`）
-- **網路架構**：MLP 128×128（可選 LSTM，config `lstm.enabled`）
+- **觀察空間**：33 維 = 28 市場特徵 + 5 持倉狀態（詳見 `docs/FEATURE_SPEC.md`）
+- **網路架構**：MLP 256×128（可選 LSTM，config `lstm.enabled`）
 - **框架**：Stable-Baselines3 PPO / sb3-contrib RecurrentPPO
 
 ### 關鍵訓練參數
 | 參數 | 值 | 參數 | 值 |
 |------|-----|------|-----|
-| Episode 長度 | 480 steps (8hr) | 學習率 | 0.0001 |
+| Episode 長度 | 720 steps (12hr) | 學習率 | 0.0001 |
 | n_steps | 2048 | Batch Size | 64 |
-| Entropy Coef | 0.1（必須 >= 0.1） | Gamma | 0.95 |
-| 並行環境 | 6 (SubprocVecEnv) | 最佳步數 | ~1M steps |
+| Entropy Coef | 0.08 | Gamma | 0.95 |
+| Clip Range | 0.18 | 總訓練步數 | 4M steps |
+| 並行環境 | 6 (SubprocVecEnv) | 最大持倉 | 120 steps |
 
 ---
 
@@ -56,18 +58,20 @@
 
 ```python
 # 平倉：已實現 PnL（主導信號）
-reward = (realized_pnl / balance) * 700 * (1.3 if profit else 1.0)
+reward = (realized_pnl / balance) * 750 * (1.8 if profit else 1.0)
 # 每步：浮動 PnL（輔助）
-reward += floating_pnl_pct * 30
+reward += floating_pnl_pct * 25
 # 止損額外懲罰
-if stop_loss: reward -= 3.5
-# 盈利持倉品質獎勵（30 步達最大 1.5）
-if in_profit: reward += 1.5 * min(holding_time / 30, 1.0)
+if stop_loss: reward -= 6.0
+# 盈利持倉品質獎勵（60 步達最大 3.0）
+if in_profit: reward += 3.0 * min(holding_time / 60, 1.0)
+# 快速重入懲罰（10 步內重新開倉）
+if rapid_reentry: reward -= 2.0
 # EMA Reward Normalization 穩定 critic
 reward = normalize_reward(reward)
 ```
 
-**設計要點**：已實現 PnL 主導（700）、浮動獎勵輔助（30）、止盈不對稱（1.3x）、手續費為天然交易頻率約束
+**設計要點**：已實現 PnL 主導（750）、浮動獎勵輔助（25）、止盈不對稱（1.8x）、快速重入懲罰（2.0）、手續費為天然交易頻率約束
 
 ---
 
@@ -76,7 +80,7 @@ reward = normalize_reward(reward)
 **核心 API**（`utils/data_pipeline.py`）：
 - `ensure_data_ready(config)` → `(train_df, test_df)`（train.py, run_backtest.py 使用）
 - `load_full_data(config)` → 完整 DataFrame（wfa.py 使用）
-- `extract_features(df)` → `np.ndarray [n, 26]`
+- `extract_features(df)` → `np.ndarray [n, 28]`
 
 **特性**：增量下載（只補缺口）+ 處理後快取（data_hash + feature_config_hash 驗證）
 
@@ -105,11 +109,10 @@ reward = normalize_reward(reward)
 
 | 文檔 | 內容 |
 |------|------|
-| `docs/FEATURE_SPEC.md` | 31 維特徵完整規格與計算模組 |
+| `docs/FEATURE_SPEC.md` | 33 維特徵完整規格與計算模組 |
 | `docs/TRAINING_METRICS.md` | 40+ 監控指標（7 大類）與 9 張圖表說明 |
-| `docs/TRAINING_FINDINGS.md` | 過擬合分析、最佳實踐、WFA 瓶頸診斷 |
 | `docs/CHANGELOG.md` | 版本記錄（v0.1 ~ v0.9） |
 
 ---
 
-*最後更新：2026-03-10*
+*最後更新：2026-03-18*

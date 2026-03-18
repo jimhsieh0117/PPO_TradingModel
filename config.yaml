@@ -33,17 +33,17 @@ trading:
 
   # 槓桿與倉位
   leverage: 1                     # 槓桿倍數
-  position_size_pct: 0.99         # 每次開倉使用資金比例（100%）
+  position_size_pct: 0.4          # 每次開倉使用資金比例（40%）
   max_positions: 1                # 最多同時持倉數
 
   # 風險管理
-  stop_loss_pct: 0.015            # 止損百分比（1.5%，ATR 不可用時的 fallback）
+  stop_loss_pct: 0.02             # 止損百分比（2%，ATR 不可用時的 fallback）
   atr_stop_multiplier: 2.0        # ATR 止損倍數（2x ATR，動態適應波動率）
   trailing_stop: false             # 啟用追蹤止損（止損價只朝有利方向移動）
   daily_drawdown_limit: 0.10      # 單日回撤限制（10%）
 
   # 交易成本
-  taker_fee: 0.0004              # Taker 手續費（0.04%）- 啟用以訓練適應真實成本
+  taker_fee: 0.0006              # Taker 手續費（0.06%）- 啟用以訓練適應真實成本
   maker_fee: 0.000               # Maker 手續費（0.02%）
   slippage: 0.0005                 # 滑點（0.05%，每次成交價格偏移）
 
@@ -76,9 +76,9 @@ ppo:
   gae_lambda: 0.95                # GAE Lambda 參數
 
   # PPO 特定參數
-  clip_range: 0.2                 # PPO Clip 範圍（v5: 0.23 → 0.2 標準值）
+  clip_range: 0.18                # PPO Clip 範圍
   clip_range_vf: 0.2             # Value Function Clip（null = 不裁剪）
-  ent_coef: 0.1                     # 熵係數（WFA 關鍵：0.07 導致模型收斂到不交易，必須 >= 0.1）
+  ent_coef: 0.08                    # 熵係數（0.08 為最佳值，過低會導致模型收斂到不交易）
   vf_coef: 0.5                    # Value Function 係數（v9: 2.0 → 0.5 恢復默認，避免 value loss 主導梯度）
   max_grad_norm: 0.5              # 梯度裁剪
 
@@ -99,8 +99,8 @@ lstm:
 # ==================== 訓練設定 ====================
 training:
   # Episode 設定
-  episode_length: 480            # Episode 長度（1440 steps = 24 小時）
-  total_timesteps: 1000000        # 總訓練步數
+  episode_length: 720            # Episode 長度（720 steps = 12 小時）
+  total_timesteps: 4000000        # 總訓練步數
 
   # 日誌與保存
   log_interval: 10                # 每 N 個 episode 記錄一次
@@ -131,15 +131,15 @@ training:
 #   if stop_loss: reward -= stop_loss_extra_penalty
 #
 reward:
-  pnl_reward_scale: 700           # 已實現盈虧縮放（滑點加入後成本 2.25x，500→1000 強化獲利信號）
-  take_profit_multiplier: 1.3     # 止盈獎勵倍數（盈利平倉 reward × 1.7，虧損平倉 × 1.0）
-  floating_reward_scale: 30        # 浮動盈虧縮放（v9: 120 → 30 讓已實現 PnL 主導 reward）
-  stop_loss_extra_penalty: 3.5     # 止損額外懲罰
-  holding_bonus_max: 1.5           # 盈利交易持倉品質獎勵（持倉30步達最大值）
-  holding_bonus_steps: 30          # 達到最大獎勵的持倉步數
-  rapid_reentry_penalty: 0.0       # v9: 移除，手續費本身即為天然懲罰
-  rapid_reentry_threshold: 3       # 重新開倉閾值（步）
-  episode_profit_bonus: 100        # Episode 結算獎勵縮放（+5% episode → +5.0 bonus）
+  pnl_reward_scale: 750           # 已實現盈虧縮放
+  take_profit_multiplier: 1.8     # 止盈獎勵倍數（盈利平倉 reward × 1.8，虧損平倉 × 1.0）
+  floating_reward_scale: 25        # 浮動盈虧縮放（讓已實現 PnL 主導 reward）
+  stop_loss_extra_penalty: 6.0     # 止損額外懲罰
+  holding_bonus_max: 3.0           # 盈利交易持倉品質獎勵（持倉60步達最大值）
+  holding_bonus_steps: 60          # 達到最大獎勵的持倉步數
+  rapid_reentry_penalty: 2.0       # 快速重入懲罰
+  rapid_reentry_threshold: 10      # 重新開倉閾值（步）
+  episode_profit_bonus: 150        # Episode 結算獎勵縮放
   # === 空倉機會成本 ===
   idle_penalty_enabled: false         # 啟用空倉機會成本
   idle_penalty_atr_threshold: 10    # 觸發門檻：bar 變動 > 0.5x ATR
@@ -157,7 +157,7 @@ reward:
   dynamic_atr_stop: false                # 啟用 volatility-adaptive ATR 止損倍數
   atr_stop_high_vol: 1.0               # 高波動期 ATR 倍數（更緊止損）
   atr_stop_low_vol: 2.0                # 低波動期 ATR 倍數（更寬止損）
-  max_holding_steps: 9999               # 最大持倉時間（360 bars = 6 小時）
+  max_holding_steps: 120                # 最大持倉時間（120 bars = 2 小時）
 
 # ==================== ICT 特徵參數 ====================
 features:
@@ -183,7 +183,7 @@ features:
 # ==================== 回測設定 ====================
 backtest:
   initial_capital: 1000000          # 初始資金（USDT）
-  commission: 0.0004           # 手續費 (0.04% taker fee)
+  commission: 0.0006           # 手續費 (0.06% taker fee)
 
   # 報告輸出
   html_report: true               # 生成 HTML 報告
@@ -192,18 +192,18 @@ backtest:
 
 # ==================== Walk Forward Analysis ====================
 wfa:
-  train_window_months: 6           # 訓練窗口（月）
+  train_window_months: 12          # 訓練窗口（月）
   test_window_months: 1             # 測試窗口（月）
   step_months: 1                    # 每次滾動步長（月）
   total_timesteps: 2000000           # 每個 fold 訓練步數
-  max_parallel_folds: 6             # 同時並行的 fold 數
-  n_cpu_per_fold: 1                 # 每個 fold 的環境數（DummyVecEnv）
+  max_parallel_folds: 1             # 同時並行的 fold 數
+  n_cpu_per_fold: 6                 # 每個 fold 的環境數（DummyVecEnv）
 
-  # 通過標準（根據歷史 WFA 結果校準，確保門檻有篩選能力）
+  # 通過標準
   pass_criteria:
-    min_profitable_folds_ratio: 0.50  # 至少 50% fold 盈利
-    min_avg_sharpe: 0.5               # 平均 Sharpe > 0.5（正期望值）
-    max_fold_drawdown_pct: -15.0      # 單 fold 最大回撤不超過 -15%
+    min_profitable_folds_ratio: 0.67  # 至少 67% fold 盈利
+    min_avg_sharpe: 1.3               # 平均 Sharpe > 1.3
+    max_fold_drawdown_pct: -10.0      # 單 fold 最大回撤不超過 -10%
 
 # ==================== 其他設定 ====================
 misc:

@@ -47,25 +47,13 @@
 
 ## 快速開始
 
-### 1. 安裝依賴
+### 1. 環境初始化
 
 ```bash
-pip install -r requirements_base.txt
+python setup_env.py
 ```
 
-### 2. 配置參數
-
-編輯 `config.yaml` 設定交易對、日期範圍與超參數。本機差異設定請建立 `config_local.yaml`（不納入 git 追蹤）：
-
-```yaml
-# config_local.yaml
-ppo:
-  device: "mps"   # 或 "cuda" / "cpu"
-misc:
-  n_cpu: 8
-data:
-  symbol: "ETHUSDT"
-```
+自動完成依賴安裝、目錄建立及 `config_local.yaml` 生成。本機差異設定（GPU 裝置、CPU 數量等）可在生成的 `config_local.yaml` 中修改。
 
 ### 3. 訓練
 
