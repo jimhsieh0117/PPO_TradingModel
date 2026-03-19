@@ -41,6 +41,7 @@ from live_trading.notifier import create_notifier
 from live_trading.risk_manager import RiskManager
 from live_trading.state import TradingState
 from live_trading.state_snapshot import StateSnapshot
+from live_trading.user_data_stream import UserDataStream
 from live_trading.utils.binance_client import BinanceFuturesClient
 
 logger = logging.getLogger("live_trading.bot")
@@ -78,6 +79,7 @@ class TradingBot:
         self.notifier = None
         self.snapshot: StateSnapshot = None
         self.command_handler: TelegramCommandHandler = None
+        self.user_data_stream: UserDataStream = None
 
     # ================================================================
     # 啟動
@@ -162,6 +164,7 @@ class TradingBot:
             initial_balance=balance,
             episode_length=episode_length,
             max_holding_steps=max_holding,
+            on_exchange_close=self._on_exchange_close,
         )
 
         # 恢復快照（防崩潰後風控歸零）
@@ -169,10 +172,21 @@ class TradingBot:
         snap_data = self.snapshot.get_recoverable_fields()
         self.state.restore_from_snapshot(snap_data)
 
-        # 同步交易所持倉
-        pos_data = self.client.get_position_risk(symbol)
-        if pos_data:
+        # 同步交易所持倉（強制成功，最多重試 3 次）
+        pos_data = None
+        for attempt in range(3):
+            pos_data = self.client.get_position_risk(symbol)
+            if pos_data is not None:
+                break
+            logger.warning(f"Position sync failed, retry {attempt + 1}/3")
+            time.sleep(2)
+
+        if pos_data is not None:
             self.state.sync_from_exchange(pos_data, balance)
+        else:
+            raise RuntimeError(
+                "Cannot sync position from exchange after 3 retries — aborting startup"
+            )
 
         # 7. Feature Engine
         feature_config = self._load_training_feature_config()
@@ -188,7 +202,19 @@ class TradingBot:
         # 9. Risk Manager
         self.risk_manager = RiskManager(cfg)
 
-        # 10. Data Feed（最後，因為啟動後會開始收 K 線）
+        # 10. User Data Stream（接收訂單/帳戶推送，取代輪詢）
+        self.user_data_stream = UserDataStream(
+            client=self.client,
+            on_order_update=self._on_order_update,
+            on_account_update=self._on_account_update,
+        )
+        if not self.user_data_stream.start():
+            logger.warning(
+                "User Data Stream failed to start — "
+                "falling back to polling-based sync"
+            )
+
+        # 12. Data Feed（最後，因為啟動後會開始收 K 線）
         ws_url = self.client.get_ws_kline_url(symbol, "1m")
         self.data_feed = DataFeed(
             ws_url=ws_url,
@@ -200,7 +226,7 @@ class TradingBot:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
-        # 11. Telegram Command Handler（可選）
+        # 13. Telegram Command Handler（可選）
         self._start_time = datetime.now(timezone.utc)
         notif_cfg = cfg.get("notification", {})
         tg_token = os.environ.get(
@@ -312,21 +338,36 @@ class TradingBot:
                         f"Client-side SL triggered | "
                         f"price={current_price:.2f} sl={self.state.current_sl:.2f}"
                     )
-                    # 先查交易所是否還有倉位（Algo SL 可能已觸發）
-                    exchange_pos = self.executor._check_exchange_position()
-                    if exchange_pos == 0:
-                        logger.warning(
-                            "SL triggered but exchange has no position — "
-                            "Algo SL likely already fired, clearing local state"
-                        )
-                        self.state.close_position(
-                            exit_price=current_price,
-                            pnl=0.0,
-                            fee=0.0,
-                            reason="algo_sl_fired(client_side_sl)",
-                        )
-                        return
                     with self.position_lock:
+                        # Double-close 防護：User Data Stream 可能已處理
+                        if not self.state.has_position:
+                            logger.info(
+                                "SL triggered but position already closed "
+                                "(likely by User Data Stream) — skipping"
+                            )
+                            return
+
+                        # 先查交易所是否還有倉位（Algo SL 可能已觸發）
+                        exchange_pos = self.executor._check_exchange_position()
+                        if exchange_pos is None:
+                            logger.error(
+                                "Cannot verify exchange position — "
+                                "aborting client-side SL close"
+                            )
+                            return
+                        if exchange_pos == 0:
+                            logger.warning(
+                                "SL triggered but exchange has no position — "
+                                "Algo SL likely already fired, clearing local state"
+                            )
+                            self.state.close_position(
+                                exit_price=current_price,
+                                pnl=0.0,
+                                fee=0.0,
+                                reason="algo_sl_fired(client_side_sl)",
+                            )
+                            return
+
                         result = self.executor.force_close(
                             self.state, reason="client_side_sl"
                         )
@@ -522,6 +563,188 @@ class TradingBot:
         )
 
     # ================================================================
+    # 交易所平倉回調（sync_from_exchange 偵測到 DESYNC 時觸發）
+    # ================================================================
+
+    def _on_exchange_close(self, entry_price: float, quantity: float,
+                           side: int, estimated_pnl: float,
+                           reason: str) -> None:
+        """
+        交易所已平倉但本地 state 未更新時的回調
+
+        Fix 1: 補上 trades.jsonl 記錄 + Telegram 通知
+        Fix 3: 查詢交易所成交記錄取得精確 exit_price 和 fee
+        """
+        symbol = self.config["trading"]["symbol"]
+        exit_price = 0.0
+        fee = 0.0
+        pnl = estimated_pnl
+
+        # 嘗試從交易所成交記錄取得精確數據
+        try:
+            trades = self.client.get_recent_user_trades(symbol, limit=10)
+            if trades:
+                # 找最近的 realizedPnl != 0 的成交（即平倉成交）
+                for t in reversed(trades):
+                    realized = float(t.get("realizedPnl", "0"))
+                    if realized != 0:
+                        exit_price = float(t.get("price", "0"))
+                        fee = float(t.get("commission", "0"))
+                        pnl = realized - fee
+                        logger.info(
+                            f"Found exchange close trade | "
+                            f"price={exit_price} pnl={realized:+.4f} "
+                            f"fee={fee:.4f}"
+                        )
+                        break
+        except Exception as e:
+            logger.warning(f"Failed to query user trades: {e}")
+
+        # 記錄到 trades.jsonl
+        side_str = "LONG" if side == 1 else "SHORT"
+        close_side = "SELL" if side == 1 else "BUY"
+        pnl_pct = pnl / (entry_price * quantity + 1e-10) * 100 if quantity > 0 else 0.0
+
+        trade_record = {
+            "action": 0,  # CLOSE
+            "symbol": symbol,
+            "side": close_side,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "quantity": quantity,
+            "pnl": pnl,
+            "pnl_pct": pnl_pct,
+            "fee": fee,
+            "reason": reason,
+            "balance_after": self.state.balance,
+            "_source": "exchange_sync",
+        }
+        self.tlogger.log_trade(trade_record)
+
+        # 發送 Telegram 通知
+        self.notifier.send_trade_close(
+            symbol=symbol,
+            price=exit_price,
+            pnl=pnl,
+            pnl_pct=pnl_pct,
+            holding_minutes=self.state.holding_steps,
+            reason=reason,
+        )
+
+        logger.info(
+            f"Exchange close recorded | {side_str} "
+            f"entry={entry_price:.2f} exit={exit_price:.2f} "
+            f"pnl={pnl:+.4f} ({pnl_pct:+.2f}%) | reason={reason}"
+        )
+
+    # ================================================================
+    # User Data Stream 回調
+    # ================================================================
+
+    def _on_order_update(self, order: dict) -> None:
+        """
+        ORDER_TRADE_UPDATE 回調 — 交易所推送訂單狀態變更
+
+        用於即時偵測 Algo SL 觸發（不用等 health_check 輪詢）
+        注意：此回調在 WebSocket 執行緒上運行，必須加鎖防競態
+        """
+        symbol = order.get("s", "")
+        if symbol != self.config["trading"]["symbol"]:
+            return
+
+        status = order.get("X", "")
+        order_type = order.get("o", "")
+        realized_pnl = float(order.get("rp", "0"))
+
+        # 偵測 STOP_MARKET 被觸發（Algo SL）
+        if order_type == "STOP_MARKET" and status == "FILLED":
+            avg_price = float(order.get("ap", "0"))
+            filled_qty = float(order.get("z", "0"))
+            commission = float(order.get("n", "0"))
+
+            logger.info(
+                f"ALGO SL FILLED (via User Data Stream) | "
+                f"price={avg_price} qty={filled_qty} "
+                f"pnl={realized_pnl:+.4f} fee={commission:.4f}"
+            )
+
+            with self.position_lock:
+                # Double-close 防護：確認本地還有倉位
+                if not self.state.has_position:
+                    logger.info(
+                        "ALGO SL FILLED but local position already closed — skipping"
+                    )
+                    return
+
+                pnl = realized_pnl - commission
+                pnl_pct = pnl / (self.state.entry_price * self.state.quantity + 1e-10) * 100
+
+                # 記錄 + 通知
+                trade_record = {
+                    "action": 0,
+                    "symbol": symbol,
+                    "side": order.get("S", ""),
+                    "entry_price": self.state.entry_price,
+                    "exit_price": avg_price,
+                    "quantity": filled_qty,
+                    "pnl": pnl,
+                    "pnl_pct": pnl_pct,
+                    "fee": commission,
+                    "reason": "algo_sl_filled",
+                    "balance_after": self.state.balance + pnl,
+                    "_source": "user_data_stream",
+                }
+                self.tlogger.log_trade(trade_record)
+
+                self.notifier.send_trade_close(
+                    symbol=symbol,
+                    price=avg_price,
+                    pnl=pnl,
+                    pnl_pct=pnl_pct,
+                    holding_minutes=self.state.holding_steps,
+                    reason="algo_sl_filled",
+                )
+
+                # 更新 state
+                self.state.close_position(
+                    exit_price=avg_price,
+                    pnl=pnl,
+                    fee=commission,
+                    reason="algo_sl_filled",
+                )
+
+    def _on_account_update(self, account: dict) -> None:
+        """
+        ACCOUNT_UPDATE 回調 — 交易所推送餘額/持倉變動
+
+        即時更新餘額，減少對 health_check 的依賴
+        注意：此回調在 WebSocket 執行緒上運行，必須加鎖防競態
+        """
+        with self.position_lock:
+            # 更新餘額
+            for b in account.get("B", []):
+                if b.get("a") == "USDT":
+                    new_balance = float(b.get("wb", "0"))
+                    if new_balance > 0:
+                        self.state.balance = new_balance
+                        logger.debug(f"Balance updated via stream: {new_balance:.2f}")
+                    break
+
+            # 更新持倉（同步方向，不覆蓋 state 的精細狀態）
+            symbol = self.config["trading"]["symbol"]
+            for p in account.get("P", []):
+                if p.get("s") != symbol:
+                    continue
+                pos_amt = float(p.get("pa", "0"))
+                if pos_amt == 0 and self.state.has_position:
+                    # 交易所倉位已清空但 state 還有 — 可能是 SL 觸發
+                    # 不在這裡處理（由 ORDER_TRADE_UPDATE 或 health_check 處理）
+                    logger.info(
+                        "ACCOUNT_UPDATE: position cleared on exchange, "
+                        "waiting for ORDER_TRADE_UPDATE to reconcile"
+                    )
+
+    # ================================================================
     # 定期健康檢查
     # ================================================================
 
@@ -586,6 +809,9 @@ class TradingBot:
         shutdown_action = self.config.get("system", {}).get(
             "shutdown_action", "keep_with_sl"
         )
+
+        if self.user_data_stream:
+            self.user_data_stream.stop()
 
         if self.data_feed:
             self.data_feed.stop()

@@ -36,7 +36,8 @@ class TradingState:
     """
 
     def __init__(self, initial_balance: float, episode_length: int = 720,
-                 max_holding_steps: int = 120):
+                 max_holding_steps: int = 120,
+                 on_exchange_close=None):
         """
         初始化狀態
 
@@ -44,7 +45,10 @@ class TradingState:
             initial_balance: 啟動時的帳戶餘額
             episode_length: 滾動窗口大小（對齊模型訓練的 episode_length）
             max_holding_steps: 最大持倉步數（超過強制平倉）
+            on_exchange_close: 交易所平倉回調（sync 偵測到 DESYNC 時通知 bot 層）
+                               signature: (entry_price, quantity, side, estimated_pnl, reason) -> None
         """
+        self._on_exchange_close = on_exchange_close
         # === 帳戶 ===
         self.balance: float = initial_balance
         self.equity: float = initial_balance
@@ -333,8 +337,10 @@ class TradingState:
 
         Args:
             position_data: positionRisk API 回傳
-            balance: USDT 可用餘額
+            balance: USDT 錢包餘額
         """
+        # Fix 2: 先保存舊 balance，再覆蓋（修正 estimated_pnl 永遠 = 0 的 bug）
+        old_balance = self.balance
         self.balance = balance
 
         pos_amt = float(position_data.get("positionAmt", "0"))
@@ -357,23 +363,36 @@ class TradingState:
             )
 
             if exchange_side != 0:
+                # 交易所有倉但本地沒有 → 同步倉位
                 self.position = exchange_side
                 self.entry_price = entry_price
                 self.quantity = abs(pos_amt)
                 # holding_steps 無法從交易所恢復，保持現有值
             else:
-                # 本地有倉但交易所無倉 → 止損被觸發，需結算 PnL
+                # 本地有倉但交易所無倉 → 止損被觸發，需結算
                 if self.position != 0 and self.entry_price > 0:
-                    # 用 balance 差異估算 PnL
-                    old_balance = self.balance
                     estimated_pnl = balance - old_balance
+                    closed_side = self.position
+                    closed_entry = self.entry_price
+                    closed_qty = self.quantity
                     logger.warning(
                         f"SL likely triggered on exchange | "
                         f"estimated_pnl={estimated_pnl:+.4f} "
                         f"(balance: {old_balance:.2f} → {balance:.2f})"
                     )
+
+                    # Fix 1: 透過回調通知 bot 層（記錄 trades.jsonl + 發 Telegram）
+                    if self._on_exchange_close:
+                        self._on_exchange_close(
+                            entry_price=closed_entry,
+                            quantity=closed_qty,
+                            side=closed_side,
+                            estimated_pnl=estimated_pnl,
+                            reason="exchange_sl_triggered",
+                        )
+
                     self.close_position(
-                        exit_price=0.0,  # 無法得知精確平倉價
+                        exit_price=0.0,
                         pnl=estimated_pnl,
                         fee=0.0,
                         reason="exchange_sl_triggered",

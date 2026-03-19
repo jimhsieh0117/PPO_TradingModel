@@ -182,6 +182,9 @@ class Executor:
         """
         # P1 防護：下單前確認交易所無同方向倉位
         exchange_pos = self._check_exchange_position()
+        if exchange_pos is None:
+            logger.warning("Cannot verify exchange position — aborting open")
+            return None
         if exchange_pos == side:
             logger.warning(
                 f"Exchange already has {'LONG' if side == 1 else 'SHORT'} "
@@ -550,12 +553,12 @@ class Executor:
         )
         return last_result
 
-    def _check_exchange_position(self) -> int:
+    def _check_exchange_position(self) -> Optional[int]:
         """
         下單前查詢交易所實際持倉方向
 
         Returns:
-            1=多, -1=空, 0=無倉位
+            1=多, -1=空, 0=無倉位, None=查詢失敗（caller 應阻擋開倉）
         """
         try:
             pos = self.client.get_position_risk(self.symbol)
@@ -567,8 +570,8 @@ class Executor:
                     return -1
             return 0
         except Exception as e:
-            logger.warning(f"Pre-trade position check failed: {e}")
-            return 0  # 查詢失敗時不阻擋交易
+            logger.error(f"Pre-trade position check failed — blocking trade: {e}")
+            return None
 
     def _estimate_fee(self, price: float, quantity: float) -> float:
         """估算手續費（taker 0.04%）"""

@@ -93,7 +93,7 @@ class BinanceFuturesClient:
         # Server time offset（本地 - 伺服器，毫秒）
         self._time_offset_ms: int = 0
         self._last_time_sync: float = 0.0
-        self._time_sync_interval: float = 1800.0  # 每 30 分鐘重新校正
+        self._time_sync_interval: float = 300.0  # 每 5 分鐘重新校正（Windows 時鐘漂移防護）
         self._sync_server_time()
 
         env_label = "TESTNET" if testnet else "PRODUCTION"
@@ -105,25 +105,43 @@ class BinanceFuturesClient:
     # ================================================================
 
     def _sync_server_time(self) -> None:
-        """計算本地與 Binance 伺服器的時間偏移量"""
-        try:
-            local_ts = int(time.time() * 1000)
-            resp = self.session.get(
-                f"{self.base_url}/fapi/v1/time", timeout=5
-            )
-            if resp.status_code == 200:
-                server_ts = resp.json().get("serverTime", local_ts)
-                self._time_offset_ms = local_ts - server_ts
-                self._last_time_sync = time.time()
-                if abs(self._time_offset_ms) > 500:
-                    logger.warning(
-                        f"Server time offset: {self._time_offset_ms}ms "
-                        f"(local {'ahead' if self._time_offset_ms > 0 else 'behind'})"
-                    )
-                else:
-                    logger.info(f"Server time offset: {self._time_offset_ms}ms")
-        except Exception as e:
-            logger.warning(f"Server time sync failed: {e} — using local time")
+        """
+        NTP-style 多次採樣計算本地與 Binance 伺服器的時間偏移量
+
+        採樣 3 次，用 RTT 中點估算本地時間，取中位數消除網路延遲抖動。
+        """
+        offsets = []
+        for i in range(3):
+            try:
+                t1 = int(time.time() * 1000)
+                resp = self.session.get(
+                    f"{self.base_url}/fapi/v1/time", timeout=5
+                )
+                t2 = int(time.time() * 1000)
+                if resp.status_code == 200:
+                    server_ts = resp.json().get("serverTime", t1)
+                    # RTT 中點 ≈ 伺服器回應時的本地時間
+                    estimated_local = (t1 + t2) // 2
+                    offsets.append(estimated_local - server_ts)
+            except Exception:
+                pass
+
+        if offsets:
+            self._time_offset_ms = sorted(offsets)[len(offsets) // 2]
+            self._last_time_sync = time.time()
+            if abs(self._time_offset_ms) > 500:
+                logger.warning(
+                    f"Server time offset: {self._time_offset_ms}ms "
+                    f"(local {'ahead' if self._time_offset_ms > 0 else 'behind'}) "
+                    f"[{len(offsets)} samples]"
+                )
+            else:
+                logger.info(
+                    f"Server time offset: {self._time_offset_ms}ms "
+                    f"[{len(offsets)} samples]"
+                )
+        else:
+            logger.warning("Server time sync failed — using local time")
 
     def _sign(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """為 params 加入 timestamp（含 server offset 補償）和 HMAC-SHA256 簽名"""
@@ -141,7 +159,8 @@ class BinanceFuturesClient:
         return params
 
     def _request(self, method: str, path: str, params: Optional[Dict] = None,
-                 signed: bool = True, timeout: float = 5.0) -> Dict:
+                 signed: bool = True, timeout: float = 5.0,
+                 _is_retry: bool = False) -> Dict:
         """
         發送 API 請求
 
@@ -160,6 +179,9 @@ class BinanceFuturesClient:
             requests.Timeout: 請求超時
         """
         params = params or {}
+        # 保存原始參數供 -1021 重試用（重試時需重新簽名）
+        _original_params = {k: v for k, v in params.items()
+                           if k not in ("timestamp", "signature")}
         if signed:
             params = self._sign(params)
 
@@ -191,6 +213,18 @@ class BinanceFuturesClient:
         if response.status_code != 200:
             error_code = data.get("code", -1)
             error_msg = data.get("msg", "Unknown error")
+
+            # -1021: Timestamp ahead/behind → 立即重新校正 + 重試一次
+            if error_code == -1021 and signed and not _is_retry:
+                logger.warning(
+                    f"Timestamp rejected (-1021) — re-syncing server time"
+                )
+                self._sync_server_time()
+                return self._request(
+                    method, path, params=_original_params,
+                    signed=True, timeout=timeout, _is_retry=True,
+                )
+
             logger.error(
                 f"API ERROR {method} {path} | "
                 f"HTTP {response.status_code} | "
@@ -477,6 +511,22 @@ class BinanceFuturesClient:
         """查詢所有未觸發的 Algo 掛單"""
         return self._request("GET", "/fapi/v1/algoOpenOrders", params={
             "symbol": symbol,
+        })
+
+    def get_recent_user_trades(self, symbol: str, limit: int = 10) -> List[Dict]:
+        """
+        查詢最近的成交記錄（用於 sync 平倉時取得精確 exit_price 和 commission）
+
+        Args:
+            symbol: 交易對
+            limit: 回傳數量上限
+
+        Returns:
+            成交記錄列表（最新的在最後）
+        """
+        return self._request("GET", "/fapi/v1/userTrades", params={
+            "symbol": symbol,
+            "limit": limit,
         })
 
     def cancel_order(self, symbol: str, order_id: int) -> Dict:
