@@ -62,6 +62,11 @@ class UserDataStream:
         self._running = False
         self._connected = False
 
+        # L2: 連線監控指標
+        self._reconnect_count: int = 0
+        self._last_message_time: float = 0.0
+        self._backoff: int = 5  # 重連指數退避（秒）
+
     # ================================================================
     # 生命週期
     # ================================================================
@@ -111,6 +116,17 @@ class UserDataStream:
     def is_connected(self) -> bool:
         return self._connected
 
+    @property
+    def reconnect_count(self) -> int:
+        return self._reconnect_count
+
+    @property
+    def last_message_age(self) -> float:
+        """距離上次收到消息的秒數（0 = 尚未收到任何消息）"""
+        if self._last_message_time == 0.0:
+            return 0.0
+        return time.time() - self._last_message_time
+
     # ================================================================
     # listenKey 管理
     # ================================================================
@@ -130,12 +146,10 @@ class UserDataStream:
             return None
 
     def _keepalive_listen_key(self) -> bool:
-        """PUT /fapi/v1/listenKey — 續期 listenKey"""
+        """PUT /fapi/v1/listenKey — 續期 listenKey（透過 _request 統一錯誤處理）"""
         try:
-            self.client.session.put(
-                f"{self.client.base_url}/fapi/v1/listenKey",
-                headers={"X-MBX-APIKEY": self.client.api_key},
-                timeout=5,
+            self.client._request(
+                "PUT", "/fapi/v1/listenKey", params={}, signed=False, timeout=5.0
             )
             logger.debug("listenKey keepalive sent")
             return True
@@ -144,12 +158,10 @@ class UserDataStream:
             return False
 
     def _delete_listen_key(self) -> None:
-        """DELETE /fapi/v1/listenKey — 關閉 stream"""
+        """DELETE /fapi/v1/listenKey — 關閉 stream（M4: 統一使用 _request）"""
         try:
-            self.client.session.delete(
-                f"{self.client.base_url}/fapi/v1/listenKey",
-                headers={"X-MBX-APIKEY": self.client.api_key},
-                timeout=5,
+            self.client._request(
+                "DELETE", "/fapi/v1/listenKey", params={}, signed=False, timeout=5.0
             )
             logger.debug("listenKey deleted")
         except Exception as e:
@@ -176,7 +188,10 @@ class UserDataStream:
     # ================================================================
 
     def _run_ws(self) -> None:
-        """WebSocket 主迴圈（含自動重連）"""
+        """WebSocket 主迴圈（含自動重連 + 指數退避）"""
+        self._backoff = 5  # 初始重連等待秒數（_on_open 重連成功時重設）
+        max_backoff = 60  # 最大等待秒數
+
         while self._running:
             ws_url = f"{self.client.ws_url}/ws/{self._listen_key}"
             try:
@@ -196,17 +211,24 @@ class UserDataStream:
             if not self._running:
                 break
 
-            # 重連前等待
-            logger.info("User Data Stream reconnecting in 5s...")
-            time.sleep(5)
+            self._reconnect_count += 1
+            logger.info(
+                f"User Data Stream reconnecting in {self._backoff}s... "
+                f"(attempt #{self._reconnect_count})"
+            )
+            time.sleep(self._backoff)
+            self._backoff = min(self._backoff * 2, max_backoff)
 
-            # 重連前重新取得 listenKey
+            # M5: 重連前刪除舊 listenKey，避免累積到上限
+            if self._listen_key:
+                self._delete_listen_key()
             new_key = self._create_listen_key()
             if new_key:
                 self._listen_key = new_key
 
     def _on_open(self, ws) -> None:
         self._connected = True
+        self._backoff = 5  # 重連成功，重設退避計時器
         logger.info("User Data Stream WebSocket connected")
 
     def _on_close(self, ws, close_status_code, close_msg) -> None:
@@ -220,6 +242,7 @@ class UserDataStream:
 
     def _on_message(self, ws, message: str) -> None:
         """處理 User Data Stream 事件"""
+        self._last_message_time = time.time()
         try:
             data = json.loads(message)
         except json.JSONDecodeError:

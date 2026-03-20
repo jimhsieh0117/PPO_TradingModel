@@ -36,7 +36,7 @@ from live_trading.data_feed import DataFeed
 from live_trading.executor import Executor
 from live_trading.feature_engine import FeatureEngine
 from live_trading.inference import InferenceEngine
-from live_trading.logger import TradingLogger
+from live_trading.logger import TradingLogger, _obs_hash
 from live_trading.notifier import create_notifier
 from live_trading.risk_manager import RiskManager
 from live_trading.state import TradingState
@@ -63,6 +63,7 @@ class TradingBot:
         self._config_mtime: float = 0.0  # config 檔案最後修改時間
         self._last_processed_ts = None   # 去重：上一根已處理 K 線的時間戳
         self._start_time: datetime = None  # 啟動時間（供 /status 指令使用）
+        self._last_snapshot_date: str = ""  # M2: 每日特徵快照去重
 
         # 倉位操作鎖（防止 Telegram 指令與 on_bar_close 競態）
         self.position_lock = threading.Lock()
@@ -187,6 +188,26 @@ class TradingBot:
             raise RuntimeError(
                 "Cannot sync position from exchange after 3 retries — aborting startup"
             )
+
+        # H5: 啟動時檢查交易所是否已有 Algo SL 掛單
+        # 防止 snapshot 恢復的 sl_order_id 對應到已失效的訂單，或遺留孤兒 SL
+        if self.state.has_position and self.state.sl_order_id:
+            try:
+                algo_orders = self.client.get_algo_open_orders(symbol)
+                active_ids = {str(o.get("algoId", "")) for o in algo_orders}
+                if self.state.sl_order_id not in active_ids:
+                    logger.warning(
+                        f"Restored sl_order_id={self.state.sl_order_id} "
+                        f"not found in exchange algo orders — clearing"
+                    )
+                    self.state.sl_order_id = ""
+                else:
+                    logger.info(
+                        f"Restored sl_order_id={self.state.sl_order_id} "
+                        f"confirmed active on exchange"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to verify SL order on startup: {e}")
 
         # 7. Feature Engine
         feature_config = self._load_training_feature_config()
@@ -315,14 +336,22 @@ class TradingBot:
             obs = self.state.build_observation(market_features, current_price)
 
             # === 3. 更新 equity（浮動盈虧） ===
-            if self.state.position != 0:
-                if self.state.position == 1:
-                    unrealized = (current_price - self.state.entry_price) * self.state.quantity
+            # H2: 在 position_lock 內讀取 balance/position 快照，
+            # 防止 _on_account_update 在計算途中修改 balance
+            with self.position_lock:
+                snap_balance = self.state.balance
+                snap_position = self.state.position
+                snap_entry = self.state.entry_price
+                snap_qty = self.state.quantity
+
+            if snap_position != 0:
+                if snap_position == 1:
+                    unrealized = (current_price - snap_entry) * snap_qty
                 else:
-                    unrealized = (self.state.entry_price - current_price) * self.state.quantity
-                current_equity = self.state.balance + unrealized
+                    unrealized = (snap_entry - current_price) * snap_qty
+                current_equity = snap_balance + unrealized
             else:
-                current_equity = self.state.balance
+                current_equity = snap_balance
 
             self.state.step(current_equity=current_equity)
 
@@ -360,10 +389,27 @@ class TradingBot:
                                 "SL triggered but exchange has no position — "
                                 "Algo SL likely already fired, clearing local state"
                             )
+                            # C1: 查詢交易所成交記錄取得精確 exit_price
+                            real_exit = current_price
+                            real_pnl = 0.0
+                            real_fee = 0.0
+                            try:
+                                trades = self.client.get_recent_user_trades(
+                                    symbol, limit=5
+                                )
+                                for t in reversed(trades):
+                                    realized = float(t.get("realizedPnl", "0"))
+                                    if realized != 0:
+                                        real_exit = float(t.get("price", current_price))
+                                        real_fee = float(t.get("commission", "0"))
+                                        real_pnl = realized - real_fee
+                                        break
+                            except Exception:
+                                pass
                             self.state.close_position(
-                                exit_price=current_price,
-                                pnl=0.0,
-                                fee=0.0,
+                                exit_price=real_exit,
+                                pnl=real_pnl,
+                                fee=real_fee,
                                 reason="algo_sl_fired(client_side_sl)",
                             )
                             return
@@ -379,20 +425,20 @@ class TradingBot:
                             )
                     return
 
-            # === 3.6 暫停檢查（Telegram /pause 指令） ===
-            if self.command_handler and self.command_handler.is_paused:
-                self.tlogger.log_decision(
-                    bar_close=current_price, action=3,  # HOLD
-                    executed=False, risk_passed=True,
-                    risk_block_reason="paused_via_telegram",
-                    position_before=self.state.position,
-                    position_after=self.state.position,
-                    obs=obs,
-                )
-                return
-
             # === 4-7. 倉位操作（加鎖防止與 Telegram 指令競態） ===
             with self.position_lock:
+                # === 3.6 暫停檢查（在鎖內，防止 pause 與開倉競態） ===
+                if self.command_handler and self.command_handler.is_paused:
+                    self.tlogger.log_decision(
+                        bar_close=current_price, action=3,  # HOLD
+                        executed=False, risk_passed=True,
+                        risk_block_reason="paused_via_telegram",
+                        position_before=self.state.position,
+                        position_after=self.state.position,
+                        obs=obs,
+                    )
+                    return
+
                 # === 4. max_holding_steps 強制平倉 ===
                 if self.state.is_max_holding:
                     logger.info(
@@ -474,10 +520,12 @@ class TradingBot:
                 self._health_check()
                 self._check_config_reload()
 
-            # === 11. 每日特徵快照（UTC 0:00 附近） ===
+            # === 11. 每日特徵快照（UTC 0:00 的第一根 bar） ===
             now_utc = datetime.now(timezone.utc)
-            if now_utc.hour == 0 and now_utc.minute == 0:
+            today_str = now_utc.strftime("%Y-%m-%d")
+            if now_utc.hour == 0 and today_str != self._last_snapshot_date:
                 self.feature_engine.save_daily_snapshot(buffer)
+                self._last_snapshot_date = today_str
 
         except Exception as e:
             logger.error(f"Error in on_bar_close: {e}", exc_info=True)
@@ -547,7 +595,6 @@ class TradingBot:
             )
 
         # 記錄交易
-        from live_trading.logger import _obs_hash
         result["model_obs_hash"] = _obs_hash(obs)
         result["balance_after"] = self.state.balance
         self.tlogger.log_trade(result)
@@ -568,12 +615,17 @@ class TradingBot:
 
     def _on_exchange_close(self, entry_price: float, quantity: float,
                            side: int, estimated_pnl: float,
-                           reason: str) -> None:
+                           reason: str) -> dict:
         """
         交易所已平倉但本地 state 未更新時的回調
 
-        Fix 1: 補上 trades.jsonl 記錄 + Telegram 通知
-        Fix 3: 查詢交易所成交記錄取得精確 exit_price 和 fee
+        注意：此回調由 sync_from_exchange 觸發，呼叫者必須持有 position_lock。
+        目前的呼叫路徑：
+        - _health_check → with position_lock → sync_from_exchange → 此回調
+        - _initialize → sync_from_exchange → 此回調（啟動時單執行緒，無競態）
+
+        Returns:
+            dict with exit_price, fee, pnl（M7: 供 sync_from_exchange 傳入 close_position）
         """
         symbol = self.config["trading"]["symbol"]
         exit_price = 0.0
@@ -637,6 +689,9 @@ class TradingBot:
             f"pnl={pnl:+.4f} ({pnl_pct:+.2f}%) | reason={reason}"
         )
 
+        # M7: 回傳精確資料供 sync_from_exchange 的 close_position 使用
+        return {"exit_price": exit_price, "fee": fee, "pnl": pnl}
+
     # ================================================================
     # User Data Stream 回調
     # ================================================================
@@ -676,22 +731,35 @@ class TradingBot:
                     )
                     return
 
-                pnl = realized_pnl - commission
-                pnl_pct = pnl / (self.state.entry_price * self.state.quantity + 1e-10) * 100
+                # C1: 先保存 close_position 會清除的欄位
+                saved_entry_price = self.state.entry_price
+                saved_quantity = self.state.quantity
+                saved_holding_steps = self.state.holding_steps
 
-                # 記錄 + 通知
+                pnl = realized_pnl - commission
+                pnl_pct = pnl / (saved_entry_price * saved_quantity + 1e-10) * 100
+
+                # 先更新 state（close_position 會清除倉位欄位）
+                self.state.close_position(
+                    exit_price=avg_price,
+                    pnl=pnl,
+                    fee=commission,
+                    reason="algo_sl_filled",
+                )
+
+                # 記錄 + 通知（使用保存的值和更新後的 balance）
                 trade_record = {
                     "action": 0,
                     "symbol": symbol,
                     "side": order.get("S", ""),
-                    "entry_price": self.state.entry_price,
+                    "entry_price": saved_entry_price,
                     "exit_price": avg_price,
                     "quantity": filled_qty,
                     "pnl": pnl,
                     "pnl_pct": pnl_pct,
                     "fee": commission,
                     "reason": "algo_sl_filled",
-                    "balance_after": self.state.balance + pnl,
+                    "balance_after": self.state.balance,
                     "_source": "user_data_stream",
                 }
                 self.tlogger.log_trade(trade_record)
@@ -701,15 +769,7 @@ class TradingBot:
                     price=avg_price,
                     pnl=pnl,
                     pnl_pct=pnl_pct,
-                    holding_minutes=self.state.holding_steps,
-                    reason="algo_sl_filled",
-                )
-
-                # 更新 state
-                self.state.close_position(
-                    exit_price=avg_price,
-                    pnl=pnl,
-                    fee=commission,
+                    holding_minutes=saved_holding_steps,
                     reason="algo_sl_filled",
                 )
 
@@ -756,7 +816,10 @@ class TradingBot:
             pos_data = self.client.get_position_risk(symbol)
 
             if pos_data:
-                self.state.sync_from_exchange(pos_data, balance)
+                # C3: sync_from_exchange 可能觸發 _on_exchange_close 回調，
+                # 該回調會修改 state，必須在 position_lock 下執行
+                with self.position_lock:
+                    self.state.sync_from_exchange(pos_data, balance)
 
             self.risk_manager.record_api_success()
         except Exception as e:
@@ -933,6 +996,19 @@ class TradingBot:
                     changed.append(f"{key}: {old_risk.get(key)} → {new_risk.get(key)}")
 
             if changed:
+                # M3: 驗證所有必要 key 存在，防止半途更新
+                required_risk_keys = [
+                    "max_daily_loss_pct", "max_total_loss_pct",
+                    "max_consecutive_losses", "max_order_value_usdt",
+                    "min_balance_to_trade", "max_slippage_pct",
+                ]
+                missing = [k for k in required_risk_keys if k not in new_risk]
+                if missing:
+                    logger.warning(
+                        f"Config reload aborted: missing risk keys {missing}"
+                    )
+                    return
+
                 rm = self.risk_manager
                 rm.max_daily_loss_pct = new_risk["max_daily_loss_pct"]
                 rm.max_total_loss_pct = new_risk["max_total_loss_pct"]
@@ -957,27 +1033,60 @@ class TradingBot:
 
 
 PID_FILE = Path("live_trading/bot.pid")
+_pid_lock_fd = None  # 持有 flock 的 fd（程式結束前不可關閉）
 
 
 def _check_single_instance() -> None:
-    """確保只有一個 bot 實例在運行（PID lock file）"""
+    """確保只有一個 bot 實例在運行（fcntl.flock + PID file）"""
+    global _pid_lock_fd
+
+    # 嘗試使用 fcntl.flock（macOS/Linux，原子性保證）
+    try:
+        import fcntl
+        _pid_lock_fd = open(PID_FILE, "a+")
+        try:
+            fcntl.flock(_pid_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # 無法取得鎖 → 另一個實例正在運行
+            _pid_lock_fd.seek(0)
+            old_pid = _pid_lock_fd.read().strip()
+            print(f"ERROR: Another bot instance is already running (PID {old_pid})")
+            print(f"  If this is a stale lock, delete {PID_FILE}")
+            sys.exit(1)
+        # 取得鎖成功 → 寫入 PID
+        _pid_lock_fd.seek(0)
+        _pid_lock_fd.truncate()
+        _pid_lock_fd.write(str(os.getpid()))
+        _pid_lock_fd.flush()
+        return
+    except ImportError:
+        pass  # Windows — fallback 到 PID 檢查
+
+    # Fallback: PID 存在性檢查（Windows 或 fcntl 不可用）
     if PID_FILE.exists():
         try:
             old_pid = int(PID_FILE.read_text().strip())
-            # 檢查舊進程是否還活著
             os.kill(old_pid, 0)
             print(f"ERROR: Another bot instance is already running (PID {old_pid})")
             print(f"  If this is a stale lock, delete {PID_FILE}")
             sys.exit(1)
         except (ProcessLookupError, ValueError):
-            # 舊進程已死，清理 PID file
             pass
 
     PID_FILE.write_text(str(os.getpid()))
 
 
 def _cleanup_pid() -> None:
-    """清理 PID file"""
+    """清理 PID file 和釋放 flock"""
+    global _pid_lock_fd
+    try:
+        if _pid_lock_fd is not None:
+            import fcntl
+            fcntl.flock(_pid_lock_fd, fcntl.LOCK_UN)
+            _pid_lock_fd.close()
+            _pid_lock_fd = None
+    except (ImportError, OSError):
+        pass
     try:
         if PID_FILE.exists():
             PID_FILE.unlink()

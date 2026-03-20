@@ -53,6 +53,7 @@ class Executor:
         self.stop_loss_pct: float = config["risk"]["stop_loss_pct"]
         self.max_order_value: float = config["risk"]["max_order_value_usdt"]
         self.max_slippage_pct: float = config["risk"].get("max_slippage_pct", 0.003)
+        self._taker_fee: float = config["trading"].get("taker_fee", 0.0006)
 
         # 快取交易所 filter
         self._min_notional: float = 5.0  # 預設值，啟動時更新
@@ -123,8 +124,11 @@ class Executor:
                 close_result = self._close_position(state)
                 if close_result is None:
                     return None
+                # C2: 用平倉後的正確餘額計算新倉位大小
+                post_close_balance = close_result.get("balance_after", state.balance)
                 open_result = self._open_position(side=1, state=state, atr=atr,
-                                                  current_price=current_price)
+                                                  current_price=current_price,
+                                                  override_balance=post_close_balance)
                 if open_result is None:
                     return close_result  # 平倉成功但開倉失敗，仍回傳平倉
                 return [close_result, open_result]
@@ -138,8 +142,11 @@ class Executor:
                 close_result = self._close_position(state)
                 if close_result is None:
                     return None
+                # C2: 用平倉後的正確餘額計算新倉位大小
+                post_close_balance = close_result.get("balance_after", state.balance)
                 open_result = self._open_position(side=-1, state=state, atr=atr,
-                                                  current_price=current_price)
+                                                  current_price=current_price,
+                                                  override_balance=post_close_balance)
                 if open_result is None:
                     return close_result
                 return [close_result, open_result]
@@ -169,7 +176,8 @@ class Executor:
     # ================================================================
 
     def _open_position(self, side: int, state, atr: float,
-                       current_price: float) -> Optional[Dict[str, Any]]:
+                       current_price: float,
+                       override_balance: Optional[float] = None) -> Optional[Dict[str, Any]]:
         """
         開倉流程：
         1. 計算下單數量
@@ -192,8 +200,9 @@ class Executor:
             )
             return None
 
-        # 計算下單數量
-        qty = self._calculate_quantity(state.balance, current_price)
+        # C2: 反向開倉時使用 override_balance（平倉後的正確餘額）
+        balance = override_balance if override_balance is not None else state.balance
+        qty = self._calculate_quantity(balance, current_price)
         if qty is None:
             return None
 
@@ -340,7 +349,13 @@ class Executor:
                     status = order_result.get("status", "")
 
             if status != "FILLED":
-                logger.error(f"Close order not filled: status={status}")
+                # H4: 部分成交或完全未成交 — 記錄詳細資訊
+                executed_qty = float(order_result.get("executedQty", 0))
+                logger.error(
+                    f"Close order not fully filled: status={status} "
+                    f"executedQty={executed_qty}/{state.quantity} — "
+                    f"next health_check will sync with exchange"
+                )
                 return None
 
             exit_price = float(order_result.get("avgPrice", 0))
@@ -574,8 +589,8 @@ class Executor:
             return None
 
     def _estimate_fee(self, price: float, quantity: float) -> float:
-        """估算手續費（taker 0.04%）"""
-        return price * quantity * 0.0004
+        """估算手續費（使用 config trading.taker_fee，預設 0.06%）"""
+        return price * quantity * self._taker_fee
 
     def _verify_stop_order(self, sl_order_id: str,
                            max_retries: int = 2) -> bool:

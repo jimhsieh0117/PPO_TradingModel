@@ -18,6 +18,7 @@ import hmac
 import logging
 import os
 import time
+from collections import deque
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
@@ -89,6 +90,13 @@ class BinanceFuturesClient:
         # 請求計數（供斷路器使用）
         self._request_count = 0
         self._last_request_time = 0.0
+
+        # H3: 滑動窗口速率限制（Binance 限制 2400 weight/min，保守設 1200）
+        self._request_timestamps: deque = deque()
+        self._max_requests_per_min: int = 1200
+
+        # H1 / L2: 精度快取初始化
+        self._symbol_precision_cache: Dict[str, Dict[str, int]] = {}
 
         # Server time offset（本地 - 伺服器，毫秒）
         self._time_offset_ms: int = 0
@@ -189,6 +197,21 @@ class BinanceFuturesClient:
         self._request_count += 1
         self._last_request_time = time.time()
 
+        # H3: 滑動窗口速率限制
+        now = time.time()
+        cutoff = now - 60.0
+        while self._request_timestamps and self._request_timestamps[0] < cutoff:
+            self._request_timestamps.popleft()
+        if len(self._request_timestamps) >= self._max_requests_per_min:
+            wait = 60.0 - (now - self._request_timestamps[0])
+            if wait > 0:
+                logger.warning(
+                    f"Rate limit approaching ({len(self._request_timestamps)} "
+                    f"req/min), waiting {wait:.1f}s"
+                )
+                time.sleep(wait)
+        self._request_timestamps.append(time.time())
+
         logger.debug(f"API {method} {path} | params={_safe_log_params(params)}")
 
         try:
@@ -196,6 +219,8 @@ class BinanceFuturesClient:
                 response = self.session.get(url, params=params, timeout=timeout)
             elif method == "POST":
                 response = self.session.post(url, data=params, timeout=timeout)
+            elif method == "PUT":
+                response = self.session.put(url, data=params, timeout=timeout)
             elif method == "DELETE":
                 response = self.session.delete(url, params=params, timeout=timeout)
             else:
@@ -213,6 +238,17 @@ class BinanceFuturesClient:
         if response.status_code != 200:
             error_code = data.get("code", -1)
             error_msg = data.get("msg", "Unknown error")
+
+            # H3: HTTP 429 Rate Limited — 遵守 Retry-After 並拋出錯誤
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", 60))
+                logger.warning(
+                    f"Rate limited (HTTP 429) — must wait {retry_after}s"
+                )
+                raise BinanceClientError(
+                    429, error_code,
+                    f"Rate limited, retry after {retry_after}s"
+                )
 
             # -1021: Timestamp ahead/behind → 立即重新校正 + 重試一次
             if error_code == -1021 and signed and not _is_retry:
@@ -577,16 +613,12 @@ class BinanceFuturesClient:
 
     def _get_quantity_precision(self, symbol: str) -> int:
         """取得數量精度（小數位數）"""
-        if not hasattr(self, "_symbol_precision_cache"):
-            self._symbol_precision_cache = {}
         if symbol not in self._symbol_precision_cache:
             self._load_symbol_precision(symbol)
         return self._symbol_precision_cache[symbol]["quantity"]
 
     def _get_price_precision(self, symbol: str) -> int:
         """取得價格精度（小數位數）"""
-        if not hasattr(self, "_symbol_precision_cache"):
-            self._symbol_precision_cache = {}
         if symbol not in self._symbol_precision_cache:
             self._load_symbol_precision(symbol)
         return self._symbol_precision_cache[symbol]["price"]
@@ -610,6 +642,14 @@ class BinanceFuturesClient:
     # ================================================================
     # WebSocket URL
     # ================================================================
+
+    def close(self) -> None:
+        """H1: 關閉 session 並清除記憶體中的 API 憑證"""
+        self.api_key = ""
+        self.api_secret = ""
+        self.session.headers.clear()
+        self.session.close()
+        logger.info("BinanceFuturesClient closed, credentials cleared")
 
     def get_ws_kline_url(self, symbol: str, interval: str = "1m") -> str:
         """取得 K 線 WebSocket 訂閱 URL"""

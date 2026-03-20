@@ -541,9 +541,21 @@ def main() -> None:
     # ---- 1. Load full dataset (ONCE) ----
     print("\n[1/5] Loading full dataset...")
     full_df = load_full_dataset(config)
+
+    # 按 config 日期範圍過濾（跟隨 config_local.yaml 覆蓋）
+    data_config = config.get("data", {})
+    cfg_start = data_config.get("start_date")
+    cfg_end = data_config.get("end_date")
+    if cfg_start:
+        full_df = full_df[full_df["timestamp"] >= pd.to_datetime(cfg_start)].reset_index(drop=True)
+    if cfg_end:
+        full_df = full_df[full_df["timestamp"] <= pd.to_datetime(cfg_end)].reset_index(drop=True)
+
     data_start = full_df["timestamp"].min()
     data_end = full_df["timestamp"].max()
     print(f"      {len(full_df):,} bars  |  {data_start} ~ {data_end}")
+    if cfg_start or cfg_end:
+        print(f"      (filtered by config: {cfg_start} ~ {cfg_end})")
 
     # ---- 2. Extract pre-computed features from pipeline data ----
     print("\n[2/5] Extracting pre-computed features...")

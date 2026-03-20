@@ -76,7 +76,7 @@ class TradingState:
         self.daily_reset_date: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         # === 交易歷史（供 Telegram 指令查詢） ===
-        self.trade_history: list = []        # 最近 100 筆交易記錄
+        self.trade_history: deque = deque(maxlen=100)
         self.daily_win_count: int = 0
         self.daily_loss_count: int = 0
         self.daily_max_pnl: float = 0.0
@@ -138,9 +138,9 @@ class TradingState:
         else:
             floating_pnl_pct = 0.0
 
-        # (3) 持倉時間正規化 (0~1, 120 步飽和)
+        # (3) 持倉時間正規化 (0~1, max_holding_steps 步飽和)
         if self.position != 0:
-            holding_time_norm = min(self.holding_steps / 120.0, 1.0)
+            holding_time_norm = min(self.holding_steps / float(self.max_holding_steps), 1.0)
         else:
             holding_time_norm = 0.0
 
@@ -277,6 +277,23 @@ class TradingState:
             "reason": reason,
         }
 
+        logger.info(
+            f"Position closed | {record['side']} "
+            f"entry={record['entry_price']:.2f} exit={exit_price:.2f} "
+            f"pnl={pnl:+.2f} ({record['pnl_pct']:+.2f}%) "
+            f"held={self.holding_steps} steps | reason={reason}"
+        )
+
+        # H2 fix: 先清除持倉，再更新統計
+        # 避免其他線程看到「有倉位 + 已結算 balance」的不一致狀態
+        self.position = 0
+        self.entry_price = 0.0
+        self.entry_time = None
+        self.quantity = 0.0
+        self.holding_steps = 0
+        self.current_sl = 0.0
+        self.sl_order_id = ""
+
         # 更新統計
         self.balance += pnl
         self.equity = self.balance
@@ -293,29 +310,11 @@ class TradingState:
         self.daily_max_pnl = max(self.daily_max_pnl, pnl)
         self.daily_min_pnl = min(self.daily_min_pnl, pnl)
 
-        # 記錄到交易歷史（保留最近 100 筆）
+        # 記錄到交易歷史（deque maxlen=100 自動淘汰）
         record["close_time"] = datetime.now(timezone.utc).isoformat()
         self.trade_history.append(record)
-        if len(self.trade_history) > 100:
-            self.trade_history.pop(0)
 
         self._last_close_step = self._step_count
-
-        logger.info(
-            f"Position closed | {record['side']} "
-            f"entry={record['entry_price']:.2f} exit={exit_price:.2f} "
-            f"pnl={pnl:+.2f} ({record['pnl_pct']:+.2f}%) "
-            f"held={self.holding_steps} steps | reason={reason}"
-        )
-
-        # 清除持倉
-        self.position = 0
-        self.entry_price = 0.0
-        self.entry_time = None
-        self.quantity = 0.0
-        self.holding_steps = 0
-        self.current_sl = 0.0
-        self.sl_order_id = ""
 
         return record
 
@@ -382,8 +381,10 @@ class TradingState:
                     )
 
                     # Fix 1: 透過回調通知 bot 層（記錄 trades.jsonl + 發 Telegram）
+                    # M7: 回調回傳精確的 exit_price/fee/pnl
+                    close_info = None
                     if self._on_exchange_close:
-                        self._on_exchange_close(
+                        close_info = self._on_exchange_close(
                             entry_price=closed_entry,
                             quantity=closed_qty,
                             side=closed_side,
@@ -391,10 +392,19 @@ class TradingState:
                             reason="exchange_sl_triggered",
                         )
 
+                    if isinstance(close_info, dict):
+                        real_exit = close_info.get("exit_price", 0.0)
+                        real_fee = close_info.get("fee", 0.0)
+                        real_pnl = close_info.get("pnl", estimated_pnl)
+                    else:
+                        real_exit = 0.0
+                        real_fee = 0.0
+                        real_pnl = estimated_pnl
+
                     self.close_position(
-                        exit_price=0.0,
-                        pnl=estimated_pnl,
-                        fee=0.0,
+                        exit_price=real_exit,
+                        pnl=real_pnl,
+                        fee=real_fee,
                         reason="exchange_sl_triggered",
                     )
                     # close_position 已更新 balance，但交易所 balance 才是真值
@@ -423,20 +433,35 @@ class TradingState:
             "daily_reset_date": self.daily_reset_date,
             "balance": self.balance,
             "step_count": self._step_count,
+            # M1 + H5: 持倉資料（crash 後恢復 holding_steps 和 sl_order_id）
+            "position": self.position,
+            "entry_price": self.entry_price,
+            "quantity": self.quantity,
+            "holding_steps": self.holding_steps,
+            "current_sl": self.current_sl,
+            "sl_order_id": self.sl_order_id,
         }
 
     def restore_from_snapshot(self, data: Dict[str, Any]) -> None:
-        """從快照恢復風控統計"""
+        """從快照恢復風控統計與持倉資料"""
         self.consecutive_losses = data.get("consecutive_losses", 0)
         self.daily_pnl = data.get("daily_pnl", 0.0)
         self.total_pnl = data.get("total_pnl", 0.0)
         self.trade_count = data.get("trade_count", 0)
         self.daily_reset_date = data.get("daily_reset_date", self.daily_reset_date)
+        # M1 + H5: 恢復持倉資料
+        # sync_from_exchange 會覆蓋 position/entry_price/quantity，
+        # 但 holding_steps 和 sl_order_id 無法從交易所取得
+        self.holding_steps = data.get("holding_steps", 0)
+        self.sl_order_id = data.get("sl_order_id", "")
+        self.current_sl = data.get("current_sl", 0.0)
         logger.info(
             f"State restored from snapshot | "
             f"consecutive_losses={self.consecutive_losses} "
             f"daily_pnl={self.daily_pnl:.2f} "
-            f"total_pnl={self.total_pnl:.2f}"
+            f"total_pnl={self.total_pnl:.2f} "
+            f"holding_steps={self.holding_steps} "
+            f"sl_order_id={self.sl_order_id or 'none'}"
         )
 
     # ================================================================
