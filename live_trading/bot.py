@@ -406,10 +406,25 @@ class TradingBot:
                                         break
                             except Exception:
                                 pass
+                            saved_entry = self.state.entry_price
+                            saved_qty = self.state.quantity
+                            saved_steps = self.state.holding_steps
                             self.state.close_position(
                                 exit_price=real_exit,
                                 pnl=real_pnl,
                                 fee=real_fee,
+                                reason="algo_sl_fired(client_side_sl)",
+                            )
+                            real_pnl_pct = (
+                                real_pnl / (saved_entry * saved_qty + 1e-10) * 100
+                                if saved_qty > 0 else 0.0
+                            )
+                            self.notifier.send_trade_close(
+                                symbol=symbol,
+                                price=real_exit,
+                                pnl=real_pnl,
+                                pnl_pct=real_pnl_pct,
+                                holding_minutes=saved_steps,
                                 reason="algo_sl_fired(client_side_sl)",
                             )
                             return
@@ -542,11 +557,26 @@ class TradingBot:
                 "Algo SL already fired on exchange — "
                 "clearing local state without sending order"
             )
+            saved_entry = self.state.entry_price
+            saved_qty = self.state.quantity
+            saved_steps = self.state.holding_steps
+            reason = f"algo_sl_fired({result.get('reason', '')})"
             self.state.close_position(
                 exit_price=current_price,
                 pnl=0.0,  # 真實 PnL 已由 Algo SL 結算
                 fee=0.0,
-                reason=f"algo_sl_fired({result.get('reason', '')})",
+                reason=reason,
+            )
+            pnl_pct = 0.0
+            if saved_qty > 0 and saved_entry > 0:
+                pnl_pct = 0.0  # 真實 PnL 未知，不估算
+            self.notifier.send_trade_close(
+                symbol=result.get("symbol", ""),
+                price=current_price,
+                pnl=0.0,
+                pnl_pct=pnl_pct,
+                holding_minutes=saved_steps,
+                reason=reason,
             )
             return
 
